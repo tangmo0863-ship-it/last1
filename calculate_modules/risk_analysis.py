@@ -1,436 +1,235 @@
 """
-pages_content/risk_analysis.py
---------------------------
-หน้า "Risk Analysis" ของ CIS Dashboard
+calculate_modules/risk_analysis.py
+--------------------------------------
+สูตรคำนวณโมดูล "Risk Analysis" (🛡️) — คู่กับ pages_content/risk_analysis.py
 
-วิธีทดสอบหน้านี้แบบเดี่ยว (ไม่ต้องรอทีมคนอื่น):
-    streamlit run preview_my_page.py
-    (แล้วเลือกโมดูลนี้จาก dropdown ในไฟล์ preview_my_page.py)
+=== DATA CONTRACT (key เดิมครบ + key ใหม่) ===
+key เดิม: risk_score, volatility, volatility_calc, max_drawdown, var_95, beta, sharpe_ratio, sortino_ratio,
+          cvar_95, psr, recovery_days, risk_free_rate_annual,
+          risk_dim_tail, risk_dim_drawdown, risk_dim_volatility, risk_dim_market, risk_dim_quality,
+          beta_verified, beta_note
+key ใหม่: volatility_static, max_drawdown_static, risk_dims_used, risk_data_note
 
-=== MERGE NOTE (รวม Branch main x Copy-ทีมออกแบบ) ===
-- ธีม/เลย์เอาต์ทั้งหมดยึดตามทีมออกแบบ (การ์ดพื้นขาว)
-- Logic การเช็คข้อมูลไม่พอ (_is_missing / risk_score_available / fallback CVaR & PSR) ยึดตาม main ทั้งหมด
-  เพื่อไม่ให้หน้าจอพังหรือโชว์เลขหลอกเวลาไม่มีข้อมูลจริง
-- ส่วน RISK-ADJUSTED RETURN ยึดตาม main เป็นหลัก (ใช้ _fmt_or_na แสดง N/A แทนตัวเลข 0.00 หลอกๆ)
-
-=== PATCH NOTE (เพิ่มพื้นหลังอ่อนๆ ให้การ์ด RISK SUMMARY ตามสีสถานะความเสี่ยง) ===
-- เพิ่มฟังก์ชัน _hex_to_rgba() สำหรับแปลงสี hex (risk_color) เป็น rgba โปร่งแสง
-- การ์ด RISK SUMMARY (gauge) เปลี่ยนพื้นหลังจากสีขาวล้วน เป็นสีอ่อนๆ ของ risk_color เดียวกับ
-  ที่ใช้กับกรอบ/ตัวหนังสือสถานะ (LOW/MODERATE/HIGH RISK) อยู่แล้ว เพื่อให้การ์ดดูมีน้ำหนักสี
-  ตรงกับสถานะความเสี่ยงมากขึ้น ไม่กระทบ logic การคำนวณ risk_score / risk_status ใดๆ
+=== CHANGELOG (รอบแก้ "ตัวเลขต้องถูกก่อน") ===
+- [FIX-R1] Volatility ใช้ค่าที่คำนวณจากราคาจริงใน Dataset (std ผลตอบแทนรายวัน x sqrt(252)) แทนค่าใน
+  stock_risk_metrics.csv — เดิมใช้ค่าจาก CSV แต่ Drawdown/VaR/CVaR/Sharpe คำนวณจากราคาจริง ทำให้ตัวเลข
+  ในหน้าเดียวกันมาจากคนละแหล่ง/คนละช่วงเวลา ค่า CSV ยังเก็บไว้ที่ volatility_static เพื่อเทียบ
+- [FIX-R2] Max Drawdown ใน CSV = -29.36% เท่ากันทั้ง 8 หุ้น (ข้อมูลต้นทางผิด) — ใช้ค่าจากราคาจริงเหมือนเดิม
+  และเก็บค่า CSV ไว้ที่ max_drawdown_static เพื่อรายงานเป็น data-quality finding
+- [FIX-R3] ไม่มี Beta → คืน None (เดิมใส่ 1.0 ปลอม) Beta จาก CSV ยังไม่ยืนยันที่มา (beta_verified=False)
+  เพราะ Dataset ไม่มีดัชนี SET ให้คำนวณเอง
+- [FIX-R4] ไม่มี PSR → มิติ quality = None (เดิมใส่ 50 ปลอม)
+- [FIX-R5] Risk Score คำนวณจากมิติที่มีจริง (ถ่วงน้ำหนักใหม่) ต้องมีอย่างน้อย 4 ใน 5 มิติ
+  และเลิก clip 25-92 → ช่วง 0-100
 """
 
-import streamlit as st
-import pandas as pd
-import numpy as np
 import math
-import plotly.graph_objects as go
-from common import safe, show_chart, render_nav_footer
+import numpy as np
+import pandas as pd
+from calculate_modules.common import clean_float
+
+RISK_FREE_RATE_ANNUAL = 0.02
+
+RISK_WEIGHT_TAIL = 0.30
+RISK_WEIGHT_DRAWDOWN = 0.25
+RISK_WEIGHT_VOLATILITY = 0.20
+RISK_WEIGHT_MARKET = 0.15
+RISK_WEIGHT_QUALITY = 0.10
+MIN_RISK_DIMS = 4
+
+BETA_VERIFIED = False
+BETA_UNVERIFIED_NOTE = "⚠️ Beta มาจาก stock_risk_metrics.csv ยังไม่ยืนยันแหล่งที่มา (Dataset ไม่มีดัชนี SET ให้คำนวณเอง)"
 
 
-def _fmt_or_na(val, spec="{:.2f}", na="N/A"):
-    if _is_missing(val):
-        return na
-    return spec.format(val)
+def _clean_price_series(df, price_col='close'):
+    out = df.copy()
+    out[price_col] = pd.to_numeric(out[price_col], errors='coerce')
+    out = out.dropna(subset=[price_col]).reset_index(drop=True)
+    return out
 
 
-def _is_missing(val):
-    if val is None:
-        return True
-    try:
-        return bool(pd.isna(val))
-    except (TypeError, ValueError):
-        return False
-
-
-def _hex_to_rgba(hex_color, alpha):
-    """แปลงสี hex (เช่น risk_color) เป็น rgba โปร่งแสง ใช้ทำพื้นหลังอ่อนๆ ตามสีสถานะ"""
-    hex_color = hex_color.lstrip('#')
-    r, g, b = int(hex_color[0:2], 16), int(hex_color[2:4], 16), int(hex_color[4:6], 16)
-    return f"rgba({r},{g},{b},{alpha})"
-
-
-def _fallback_cvar_95(stock_daily, confidence=0.95):
-    try:
-        closes = stock_daily['close'].astype(float)
-        returns = closes.pct_change().dropna()
-        if len(returns) < 20:
-            return None
-        cutoff = np.percentile(returns, (1 - confidence) * 100)
-        tail = returns[returns <= cutoff]
-        if tail.empty:
-            return None
-        return round(float(abs(tail.mean()) * 100), 2)
-    except Exception:
+def _compute_cvar(returns, confidence=0.95):
+    r = returns.dropna()
+    if len(r) < 20:
         return None
-
-
-def _fallback_psr(stock_daily, sr_benchmark=0.0):
-    try:
-        closes = stock_daily['close'].astype(float)
-        r = closes.pct_change().dropna()
-        n = len(r)
-        if n < 30 or r.std() == 0:
-            return None
-        sr_hat = r.mean() / r.std()
-        skew = r.skew()
-        kurt = r.kurtosis() + 3
-        denom_sq = 1 - skew * sr_hat + ((kurt - 1) / 4) * sr_hat ** 2
-        if denom_sq <= 0:
-            return None
-        denom = math.sqrt(denom_sq)
-        z = (sr_hat - sr_benchmark) * math.sqrt(n - 1) / denom
-        psr = 0.5 * (1 + math.erf(z / math.sqrt(2)))
-        return round(float(psr) * 100, 1)
-    except Exception:
+    cutoff = np.percentile(r, (1 - confidence) * 100)
+    tail = r[r <= cutoff]
+    if tail.empty:
         return None
+    return round(float(abs(tail.mean()) * 100), 2)
 
 
-def render(ctx):
-    raw_risk_score = ctx.stock_info.get('risk_score')
-    risk_score_available = not _is_missing(raw_risk_score)
-    risk_score = int(round(safe(raw_risk_score, 45))) if risk_score_available else None
+def _compute_var_historical(returns, confidence=0.95):
+    r = returns.dropna()
+    if len(r) < 20:
+        return None
+    cutoff = np.percentile(r, (1 - confidence) * 100)
+    return round(float(abs(cutoff) * 100), 2)
 
-    if risk_score_available:
-        risk_status = "LOW RISK" if risk_score >= 65 else ("MODERATE RISK" if risk_score >= 40 else "HIGH RISK")
-        risk_color = "#10B981" if risk_score >= 65 else ("#F59E0B" if risk_score >= 40 else "#EF4444")
+
+def _compute_psr(returns, sr_benchmark=0.0):
+    r = returns.dropna()
+    n = len(r)
+    if n < 30 or r.std() == 0:
+        return None
+    sr_hat = r.mean() / r.std()
+    skew = r.skew()
+    kurt = r.kurtosis() + 3
+    denom_sq = 1 - skew * sr_hat + ((kurt - 1) / 4) * (sr_hat ** 2)
+    if denom_sq <= 0:
+        return None
+    z = (sr_hat - sr_benchmark) * math.sqrt(n - 1) / math.sqrt(denom_sq)
+    return round(float(0.5 * (1 + math.erf(z / math.sqrt(2)))) * 100, 1)
+
+
+def _compute_recovery_days(df):
+    if len(df) < 2:
+        return None
+    cum_max = df['close'].cummax()
+    drawdown = (df['close'] - cum_max) / cum_max
+    if drawdown.isna().all():
+        return None
+    trough_idx = drawdown.idxmin()
+    peak_value = cum_max.loc[trough_idx]
+    trough_date = df.loc[trough_idx, 'date']
+    recovered = df[(df['date'] > trough_date) & (df['close'] >= peak_value)]
+    if recovered.empty:
+        return None
+    return int((recovered.iloc[0]['date'] - trough_date).days)
+
+
+def _recovery_penalty(recovery_days):
+    if recovery_days is None:
+        return 10.0
+    if recovery_days > 365:
+        return 7.0
+    if recovery_days > 180:
+        return 3.0
+    return 0.0
+
+
+def _static_value(risk_static_row, col):
+    if risk_static_row is None or risk_static_row.empty:
+        return None
+    return clean_float(risk_static_row.iloc[0].get(col), default=None)
+
+
+def _r(v, d=1):
+    return None if v is None or pd.isna(v) else round(float(v), d)
+
+
+def calculate_risk_module(df_price_ticker, risk_static_row):
+    """ตัวชี้วัดความเสี่ยง 5 มิติของหุ้น 1 ตัว"""
+    df = df_price_ticker.sort_values(by='date').reset_index(drop=True)
+    df = _clean_price_series(df, 'close')
+    df['date'] = pd.to_datetime(df['date'])
+
+    beta = _static_value(risk_static_row, 'beta')                     # FIX-R3
+    vol_static = _static_value(risk_static_row, 'volatility_pct')
+    dd_static = _static_value(risk_static_row, 'max_drawdown_pct')
+
+    if len(df) < 2:
+        return {
+            'risk_score': None, 'volatility': None, 'volatility_calc': None,
+            'max_drawdown': None, 'var_95': None, 'beta': _r(beta, 2),
+            'sharpe_ratio': None, 'sortino_ratio': None, 'cvar_95': None,
+            'psr': None, 'recovery_days': None, 'risk_free_rate_annual': RISK_FREE_RATE_ANNUAL,
+            'risk_dim_tail': None, 'risk_dim_drawdown': None, 'risk_dim_volatility': None,
+            'risk_dim_market': None, 'risk_dim_quality': None,
+            'beta_verified': BETA_VERIFIED, 'beta_note': BETA_UNVERIFIED_NOTE,
+            'volatility_static': vol_static, 'max_drawdown_static': dd_static,
+            'risk_dims_used': 0, 'risk_data_note': 'ข้อมูลราคาไม่พอ',
+        }
+
+    df['returns'] = df['close'].pct_change()
+    daily_vol = df['returns'].std()
+    annual_vol = daily_vol * np.sqrt(252) * 100                       # FIX-R1: ใช้ค่าจากราคาจริงเสมอ
+
+    cum_max = df['close'].cummax()
+    max_dd = abs(((df['close'] - cum_max) / cum_max).min()) * 100     # FIX-R2
+
+    var_95 = _compute_var_historical(df['returns'])
+    cvar_95 = _compute_cvar(df['returns'])
+
+    rf_daily = RISK_FREE_RATE_ANNUAL / 252
+    excess = df['returns'] - rf_daily
+    n_ret = len(df['returns'].dropna())
+    if pd.isna(daily_vol) or n_ret < 2:
+        sharpe = None
+    elif daily_vol > 0:
+        sharpe = round(float((excess.mean() * 252) / (daily_vol * np.sqrt(252))), 2)
     else:
-        risk_status = "N/A"
-        risk_color = "#64748B"
+        sharpe = 0.0
 
-    beta_val = safe(ctx.stock_info.get('beta'), 1.0)
-    vol_val = safe(ctx.stock_info.get('volatility'), 25.0)
-
-    # คำนวณ Max Drawdown จากราคาปิดจริงสดๆ ทันที
-    if not ctx.stock_daily.empty and 'close' in ctx.stock_daily.columns:
-        _closes = pd.to_numeric(ctx.stock_daily['close'], errors='coerce').dropna()
-        _cum_max = _closes.cummax()
-        _dd_series = (_closes - _cum_max) / _cum_max
-        dd_val = round(abs(float(_dd_series.min())) * 100, 1)
+    downside = np.minimum(0, df['returns'] - rf_daily).dropna()
+    dd_dev = np.sqrt(np.mean(downside ** 2)) if len(downside) > 1 else None
+    if dd_dev is None or pd.isna(dd_dev):
+        sortino = None
+    elif dd_dev > 0:
+        sortino = round(float((excess.mean() * 252) / (dd_dev * np.sqrt(252))), 2)
     else:
-        dd_val = safe(ctx.stock_info.get('max_drawdown'), 20.0)
+        sortino = 0.0
 
-    de_val_r = safe(ctx.stock_info.get('de_ratio'), 1.0)
-    cr_val_r = safe(ctx.stock_info.get('current_ratio'), 1.2)
+    psr = _compute_psr(df['returns'])
+    recovery_days = _compute_recovery_days(df)
 
-    st.markdown("""
-    <div style="margin-bottom:20px;">
-        <div style="font-size:26px; font-weight:700; color:#0F172A; letter-spacing:0.3px;">
-            RISK ANALYSIS
-        </div>
-        <div style="font-size:16px; color:#64748B; margin-top:4px;">
-            วิเคราะห์ความเสี่ยงของหุ้นจาก Beta, Volatility, Drawdown และ Risk-adjusted Return
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+    tail_input = cvar_95 if cvar_95 is not None else var_95
+    dims = {
+        'tail': (float(np.clip(tail_input * 10, 5, 95)) if tail_input is not None else None, RISK_WEIGHT_TAIL),
+        'drawdown': (float(np.clip(max_dd * 1.5 + _recovery_penalty(recovery_days), 5, 95))
+                     if pd.notna(max_dd) else None, RISK_WEIGHT_DRAWDOWN),
+        'volatility': (float(np.clip(annual_vol * 1.3, 5, 95)) if pd.notna(annual_vol) else None,
+                       RISK_WEIGHT_VOLATILITY),
+        'market': (float(np.clip(beta * 40, 5, 95)) if beta is not None else None, RISK_WEIGHT_MARKET),
+        'quality': (float(np.clip(100 - psr, 5, 95)) if psr is not None else None,   # FIX-R4
+                    RISK_WEIGHT_QUALITY),
+    }
 
-    r1_c1, r1_c2 = st.columns([1.15, 2.85])
+    avail = [(v, w) for v, w in dims.values() if v is not None]
+    if len(avail) >= MIN_RISK_DIMS:                                    # FIX-R5
+        risk_index = sum(v * w for v, w in avail) / sum(w for _, w in avail)
+        risk_score = round(float(np.clip(100 - risk_index, 0, 100)), 1)
+    else:
+        risk_score = None
+    missing = [k for k, (v, _) in dims.items() if v is None]
 
-    # ---------------- RISK SUMMARY (gauge) ----------------
-    with r1_c1:
-        if risk_score_available:
-            needle_frac = 1 - min(1.0, risk_score / 100)
-            score_display = f"""{risk_score}<span style="font-size:15px; color:#64748B;">/100</span>"""
-            needle_color = "#0F172A"
-        else:
-            needle_frac = 0.5
-            score_display = "N/A"
-            needle_color = "#94A3B8"
+    return {
+        'risk_score': risk_score,
+        'volatility': _r(annual_vol),
+        'volatility_calc': _r(annual_vol),
+        'max_drawdown': _r(max_dd),
+        'var_95': _r(var_95, 2),
+        'beta': _r(beta, 2),
+        'sharpe_ratio': sharpe,
+        'sortino_ratio': sortino,
+        'cvar_95': cvar_95,
+        'psr': psr,
+        'recovery_days': recovery_days,
+        'risk_free_rate_annual': RISK_FREE_RATE_ANNUAL,
+        'risk_dim_tail': _r(dims['tail'][0]),
+        'risk_dim_drawdown': _r(dims['drawdown'][0]),
+        'risk_dim_volatility': _r(dims['volatility'][0]),
+        'risk_dim_market': _r(dims['market'][0]),
+        'risk_dim_quality': _r(dims['quality'][0]),
+        'beta_verified': BETA_VERIFIED,
+        'beta_note': BETA_UNVERIFIED_NOTE if not BETA_VERIFIED else None,
+        'volatility_static': vol_static,
+        'max_drawdown_static': dd_static,
+        'risk_dims_used': len(avail),
+        'risk_data_note': ('ไม่มีข้อมูลมิติ: ' + ', '.join(missing)) if missing else '',
+    }
 
-        # พื้นหลังการ์ดนี้ใช้สีอ่อนๆ ของ risk_color เดียวกับกรอบ/ตัวหนังสือสถานะ
-        # (LOW/MODERATE/HIGH RISK) เพื่อให้ทั้งการ์ดมีน้ำหนักสีตรงกับสถานะความเสี่ยง
-        risk_summary_bg = _hex_to_rgba(risk_color, 0.08)
 
-        st.markdown(
-            f"""<div style="background-color:{risk_summary_bg}; border:2px solid {risk_color}; border-radius:12px; padding:16px; min-height:260px; display:flex; flex-direction:column; justify-content:space-between; text-align:center;">
-    <div style="font-size:16px; font-weight:bold; color:#64748B; letter-spacing:0.5px; text-align:left;">RISK SUMMARY</div>
-    <div style="margin:auto 0;"><svg viewBox="0 0 100 55" style="width:140px; height:90px; display:block; margin:0 auto;">
-    <path d="M 12 50 A 38 38 0 0 1 35 15" fill="none" stroke="#10B981" stroke-width="8" stroke-linecap="round" />
-    <path d="M 35 15 A 38 38 0 0 1 65 15" fill="none" stroke="#F59E0B" stroke-width="8" />
-    <path d="M 65 15 A 38 38 0 0 1 88 50" fill="none" stroke="#EF4444" stroke-width="8" stroke-linecap="round" />
-    <line x1="50" y1="50" x2="{50 - 30*np.cos(np.pi*needle_frac):.1f}" y2="{50 - 40*np.sin(np.pi*needle_frac):.1f}" stroke="{needle_color}" stroke-width="2.5" stroke-linecap="round"/>
-    <circle cx="50" cy="50" r="4" fill="{needle_color}"/></svg></div>
-    <div style="color:{risk_color}; font-size:21px; font-weight:bold; margin-top:2px;">{risk_status}</div>
-    <div style="font-size:14px; color:#64748B; margin-top:1px;">Risk Score (higher = safer)</div>
-    <div style="font-size:24px; font-weight:bold; color:#0F172A; line-height:1.1;">{score_display}</div></div>
-    <div style="font-size:13px; color:#64748B; line-height:1.35;">{"ระดับความเสี่ยงของ " + ctx.selected_ticker + " ประเมินจากความเสี่ยงขาลง (CVaR) การตกและฟื้นตัว (Drawdown/Recovery) ความผันผวน (Volatility) ความเสี่ยงตลาด (Beta) และคุณภาพผลตอบแทน (PSR) ถ่วงน้ำหนัก 5 มิติ" if risk_score_available else "ข้อมูลราคาย้อนหลังของหุ้นนี้ไม่พอสำหรับคำนวณ Risk Score (ต้องมีอย่างน้อยประมาณ 20-30 วันทำการ)"}</div>
-    </div>""",
-            unsafe_allow_html=True
-        )
-
-    # ---------------- RISK DIMENSION OVERVIEW ----------------
-    with r1_c2:
-        market_risk = int(np.clip(beta_val * 40, 5, 95))
-        price_risk = int(np.clip(vol_val * 1.3, 5, 95))
-        financial_risk = int(np.clip(de_val_r * 25, 5, 95))
-        liquidity_risk = int(np.clip((2.0 - cr_val_r) * 40, 5, 95))
-        downside_risk = int(np.clip(dd_val * 1.5, 5, 95))
-        overall_risk_dim = int(np.clip(100 - risk_score, 5, 95)) if risk_score_available else None
-
-        def risk_dim_card(label, val):
-            if val is None:
-                return f"""<div style="background:#151E2F; border:1px solid #1E293B; border-radius:10px; padding:10px 4px; text-align:center;">
-    <div style="font-size:13px; font-weight:bold; color:#CBD5E1;">{label}</div>
-    <div style="margin:8px auto; width:56px; height:56px; border-radius:50%; background:#1E293B; display:flex; align-items:center; justify-content:center;">
-    <span style="font-size:13px; color:#64748B;">N/A</span></div>
-    <div style="color:#64748B; font-size:12.5px; font-weight:bold;">-</div></div>"""
-            c = "#10B981" if val <= 35 else ("#F59E0B" if val <= 60 else "#EF4444")
-            lvl = "Low" if val <= 35 else ("Moderate" if val <= 60 else "High")
-
-            return f"""<div style="background:#F8FAFC; border:1px solid #D9E2EC; border-radius:10px; padding:10px 4px; text-align:center;">
-    <div style="font-size:16px; font-weight:bold; color:#334155;">{label}</div>
-    <div style="margin:8px auto; width:56px; height:56px; border-radius:50%; background:conic-gradient({c} 0% {val}%, #D9E2EC {val}% 100%); display:flex; align-items:center; justify-content:center;">
-    <div style="width:46px; height:46px; border-radius:50%; background-color:#FFFFFF; display:flex; align-items:center; justify-content:center;"><span style="font-size:16px; color:#0F172A;">{val}</span></div></div>
-    <div style="color:{c}; font-size:15px; font-weight:bold;">{lvl}</div></div>"""
-
-        dims_html = "".join([
-            risk_dim_card("Market Risk (Beta)", market_risk),
-            risk_dim_card("Price Risk (Vol.)", price_risk),
-            risk_dim_card("Financial Risk (D/E)", financial_risk),
-            risk_dim_card("Liquidity Risk", liquidity_risk),
-            risk_dim_card("Downside Risk (DD)", downside_risk),
-            risk_dim_card("Overall Risk", overall_risk_dim),
-        ])
-
-        st.markdown(
-            f"""<div style="background-color:#FFFFFF; border:1px solid #D9E2EC; border-radius:12px; padding:16px; min-height:260px; display:flex; flex-direction:column; justify-content:space-between;">
-    <div style="font-size:16px; font-weight:bold; color:#64748B; letter-spacing:0.5px;">RISK DIMENSION OVERVIEW ({ctx.selected_ticker})</div>
-    <div style="display:grid; grid-template-columns: repeat(6, 1fr); gap:8px; margin:auto 0;">{dims_html}</div>
-    <div style="font-size:11px; color:#475569; margin-top:6px;">* มุมมองแยกย่อยอย่างง่าย คำนวณคนละสูตรกับ Risk Score หลักด้านซ้าย ไม่ใช่ breakdown ของ Risk Score โดยตรง</div>
-    </div>""",
-            unsafe_allow_html=True
-        )
-
-    st.markdown("<div style='margin-top:22px;'></div>", unsafe_allow_html=True)
-    r2_c1, r2_c2, r2_c3 = st.columns(3)
-
-    rh = (
-        ctx.risk_hist_df[
-            ctx.risk_hist_df['ticker'] == ctx.selected_ticker
-        ].sort_values('date')
-        if not ctx.risk_hist_df.empty
-        else pd.DataFrame()
-    )
-
-    # ---------------- MARKET RISK (BETA) ----------------
-    with r2_c1:
-        st.markdown(
-            f"""<div style="background-color:#FFFFFF; border:1px solid #D9E2EC; border-radius:12px 12px 0 0; padding:12px 14px 0 14px;">
-    <div style="font-size:16px; font-weight:bold; color:#64748B; letter-spacing:0.5px;">MARKET RISK (BETA) — vs Peers</div>
-    <div style="font-size:22px; font-weight:bold; color:#0F172A; margin-top:2px;">{beta_val:.2f}</div></div>""",
-            unsafe_allow_html=True
-        )
-
-        beta_cmp = ctx.scores_df[['ticker', 'beta']].sort_values('beta')
-        colors_beta = ['#0284C7' if t == ctx.selected_ticker else '#CBD5E1' for t in beta_cmp['ticker']]
-
-        fig_beta = go.Figure(
-            go.Bar(x=beta_cmp['beta'], y=beta_cmp['ticker'], orientation='h', marker=dict(color=colors_beta))
-        )
-        fig_beta.add_vline(x=1.0, line_width=1, line_dash="dash", line_color="#94A3B8")
-        fig_beta.update_layout(
-            height=160,
-            margin=dict(l=40, r=10, t=10, b=20),
-            paper_bgcolor="#FFFFFF",
-            plot_bgcolor="#FFFFFF",
-            xaxis=dict(tickfont=dict(size=12, color="#64748B"), gridcolor="#D9E2EC"),
-            yaxis=dict(tickfont=dict(size=12, color="#334155"), gridcolor="#D9E2EC"),
-            showlegend=False
-        )
-        show_chart(fig_beta, key="risk_beta", expand_height=580)
-
-    # ---------------- PRICE RISK (VOLATILITY) ----------------
-    with r2_c2:
-        st.markdown(
-            f"""<div style="background-color:#FFFFFF; border:1px solid #D9E2EC; border-radius:12px 12px 0 0; padding:12px 14px 0 14px;">
-    <div style="font-size:16px; font-weight:bold; color:#64748B; letter-spacing:0.5px;">PRICE RISK — Rolling 30D Volatility (actual)</div>
-    <div style="font-size:22px; font-weight:bold; color:#0F172A; margin-top:2px;">{vol_val:.1f}%</div></div>""",
-            unsafe_allow_html=True
-        )
-
-        if not rh.empty:
-            fig_vol = go.Figure()
-            fig_vol.add_trace(go.Scatter(x=rh['date'], y=rh['rolling_vol_30d'], mode='lines', line=dict(color='#0284C7', width=1.8)))
-            fig_vol.update_layout(
-                height=160,
-                margin=dict(l=30, r=10, t=10, b=20),
-                paper_bgcolor="#FFFFFF",
-                plot_bgcolor="#FFFFFF",
-                xaxis=dict(tickfont=dict(size=12, color="#64748B"), gridcolor="#D9E2EC"),
-                yaxis=dict(tickfont=dict(size=12, color="#64748B"), gridcolor="#D9E2EC", zeroline=False),
-                showlegend=False
-            )
-            show_chart(fig_vol, key="risk_volatility", expand_height=550)
-        else:
-            st.info("ไม่มีข้อมูล")
-
-    # ---------------- DRAWDOWN ----------------
-    with r2_c3:
-        recovery_days = ctx.stock_info.get('recovery_days')
-        recovery_txt = (
-            f"ฟื้นตัวใน {int(recovery_days)} วัน"
-            if not _is_missing(recovery_days)
-            else "ยังไม่ฟื้นตัวกลับสู่จุดสูงสุดเดิม"
-        )
-
-        st.markdown(
-            f"""<div style="background-color:#FFFFFF; border:1px solid #D9E2EC; border-radius:12px 12px 0 0; padding:12px 14px 0 14px;">
-    <div style="font-size:16px; font-weight:bold; color:#64748B; letter-spacing:0.5px;">DRAWDOWN — Actual (2023-2025)</div>
-    <div style="font-size:22px; font-weight:bold; color:#EF4444; margin-top:2px;">-{dd_val:.1f}%</div>
-    <div style="font-size:13px; color:#64748B; margin-top:2px;">Recovery: {recovery_txt}</div></div>""",
-            unsafe_allow_html=True
-        )
-
-        if not rh.empty:
-            fig_dd = go.Figure()
-            fig_dd.add_trace(go.Scatter(
-                x=rh['date'], y=rh['drawdown_pct'], mode='lines',
-                line=dict(color='#EF4444', width=1.5), fill='tozeroy', fillcolor='rgba(239,68,68,0.12)'
-            ))
-            fig_dd.update_layout(
-                height=160,
-                margin=dict(l=30, r=10, t=10, b=20),
-                paper_bgcolor="#FFFFFF",
-                plot_bgcolor="#FFFFFF",
-                xaxis=dict(tickfont=dict(size=12, color="#64748B"), gridcolor="#D9E2EC"),
-                yaxis=dict(tickfont=dict(size=12, color="#64748B"), gridcolor="#D9E2EC", zeroline=False),
-                showlegend=False
-            )
-            show_chart(fig_dd, key="risk_drawdown", expand_height=550)
-        else:
-            st.info("ไม่มีข้อมูล")
-
-    st.markdown("<div style='margin-top:22px;'></div>", unsafe_allow_html=True)
-    r3_c1, r3_c2 = st.columns(2)
-
-    # ---------------- DOWNSIDE RISK (VaR/CVaR) ----------------
-    with r3_c1:
-        cvar_val = ctx.stock_info.get('cvar_95')
-        if _is_missing(cvar_val):
-            cvar_val = _fallback_cvar_95(ctx.stock_daily)
-
-        var_num_txt = _fmt_or_na(ctx.stock_info.get('var_95'))
-        var_txt = var_num_txt if var_num_txt == 'N/A' else f'-{var_num_txt}%'
-
-        if cvar_val is not None:
-            cvar_txt = _fmt_or_na(cvar_val) + '%'
-            downside_metrics_html = f"""<div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px; text-align:center; margin:auto 0;">
-    <div><div style="font-size:24px; font-weight:bold; color:#EF4444;">{var_txt}</div><div style="font-size:14px; color:#64748B;">VaR 95%</div></div>
-    <div><div style="font-size:24px; font-weight:bold; color:#EF4444;">-{cvar_txt}</div><div style="font-size:14px; color:#64748B;">CVaR 95%</div></div>
-    </div>
-    <div style="font-size:14px; color:#64748B; border-top:1px solid #D9E2EC; padding-top:7px;">VaR = ระดับขาดทุนรายวันที่ไม่ควรแย่ไปกว่านี้ใน 95% ของวัน (Historical Simulation) | CVaR = ขาดทุนเฉลี่ยจริงของวันที่แย่กว่าเส้น VaR — คำนวณจากข้อมูลจริงทั้งคู่ จึงการันตีว่า CVaR แย่กว่าหรือเท่ากับ VaR เสมอ</div>"""
-        else:
-            downside_metrics_html = f"""<div style="margin:auto 0;">
-    <div style="font-size:25px; font-weight:bold; color:#EF4444;">{var_txt}</div><div style="font-size:14px; color:#64748B;">VaR 95% (Historical)</div>
-    </div>
-    <div style="font-size:14px; color:#64748B; border-top:1px solid #D9E2EC; padding-top:7px;">VaR = ระดับขาดทุนรายวันที่ไม่ควรแย่ไปกว่านี้ใน 95% ของวัน — CVaR ยังคำนวณไม่ได้เนื่องจากข้อมูลราคาย้อนหลังไม่พอ</div>"""
-
-        st.markdown(
-            f"""<div style="background-color:#FFFFFF; border:1px solid #D9E2EC; border-radius:12px; padding:14px; min-height:240px; display:flex; flex-direction:column; justify-content:space-between;">
-    <div style="font-size:16px; font-weight:bold; color:#64748B; letter-spacing:0.5px;">DOWNSIDE RISK (Daily)</div>
-    {downside_metrics_html}
-    </div>""",
-            unsafe_allow_html=True
-        )
-
-    # ---------------- RISK-ADJUSTED RETURN (เน้นตาม main) ----------------
-    with r3_c2:
-        avg_ret = ctx.stock_daily['close'].pct_change().mean() * 252
-        calmar = round(avg_ret * 100 / dd_val, 2) if dd_val > 0 else 0
-        rf_pct = safe(ctx.stock_info.get('risk_free_rate_annual'), 0.02) * 100
-
-        psr_val = ctx.stock_info.get('psr')
-        if _is_missing(psr_val):
-            psr_val = _fallback_psr(ctx.stock_daily)
-
-        base_cells = f"""<div style="background:#F8FAFC; border:1px solid #D9E2EC; border-radius:6px; padding:6px 2px;"><div style="font-size:14px; color:#64748B;">Sharpe</div><div style="font-size:18px; font-weight:bold; color:#0F172A;">{_fmt_or_na(ctx.stock_info.get('sharpe_ratio'))}</div></div>
-    <div style="background:#F8FAFC; border:1px solid #D9E2EC; border-radius:6px; padding:6px 2px;"><div style="font-size:14px; color:#64748B;">Sortino</div><div style="font-size:18px; font-weight:bold; color:#0F172A;">{_fmt_or_na(ctx.stock_info.get('sortino_ratio'))}</div></div>
-    <div style="background:#F8FAFC; border:1px solid #D9E2EC; border-radius:6px; padding:6px 2px;"><div style="font-size:14px; color:#64748B;">Calmar</div><div style="font-size:18px; font-weight:bold; color:#0F172A;">{calmar:.2f}</div></div>"""
-
-        if psr_val is not None:
-            grid_cols = 4
-            ratio_cells = base_cells + f"""
-    <div style="background:#F8FAFC; border:1px solid #D9E2EC; border-radius:6px; padding:6px 2px;">
-    <div style="font-size:14px; color:#64748B;">PSR</div>
-    <div style="font-size:18px; font-weight:bold; color:#0F172A;">{psr_val:.0f}%</div>
-    </div>"""
-
-            footnote = f"""
-        <div style="line-height:1.6; font-size:14px; color:#64748B;">
-            <b>• Sharpe:</b> ผลตอบแทนส่วนเกินเทียบความผันผวนรวม (หัก Rf ~{rf_pct:.1f}%/ปี)<br>
-            <b>• Sortino:</b> ผลตอบแทนส่วนเกินเทียบความผันผวนเฉพาะขาลง (Downside Risk)<br>
-            <b>• Calmar:</b> ผลตอบแทนเฉลี่ยต่อปีเทียบกับการขาดทุนลึกสุด (Max Drawdown)<br>
-            <b>• PSR:</b> ความน่าจะเป็นทางสถิติที่ Sharpe จริง &gt; 0 โดยปรับแก้ความเบ้/โด่ง (Bailey & López de Prado)
-        </div>
-        """
-
-        else:
-            grid_cols = 3
-            ratio_cells = base_cells
-            footnote = f"""คำนวณหัก Risk-free Rate (~{rf_pct:.1f}%/ปี) แล้ว"""
-
-        st.markdown(
-            f"""<div style="background-color:#FFFFFF; border:1px solid #D9E2EC; border-radius:12px; padding:14px; min-height:225px; display:flex; flex-direction:column; justify-content:space-between;">
-    <div style="font-size:16px; font-weight:bold; color:#64748B; letter-spacing:0.5px;">RISK-ADJUSTED RETURN (actual, 2023-2025)</div>
-    <div style="display:grid; grid-template-columns: repeat({grid_cols}, 1fr); gap:6px; text-align:center; margin:auto 0;">
-    {ratio_cells}
-    </div>
-    <div style="font-size:14px; color:#475569; padding-top:10px;">{footnote}</div>
-    </div>""",
-            unsafe_allow_html=True
-        )
-
-    st.markdown("<div style='margin-top:22px;'></div>", unsafe_allow_html=True)
-    r4_c1, r4_c2 = st.columns([1.35, 1.65])
-
-    # ---------------- RISK FACTORS HIGHLIGHT ----------------
-    with r4_c1:
-        risk_pts = []
-
-        if beta_val < 1:
-            risk_pts.append(("✔", "#10B981", f"Beta {beta_val:.2f} ต่ำกว่าตลาด ความผันผวนสัมพัทธ์ต่ำ"))
-        else:
-            risk_pts.append(("●", "#EF4444", f"Beta {beta_val:.2f} สูงกว่าตลาด อ่อนไหวต่อความผันผวนตลาดมาก"))
-
-        if de_val_r < 1:
-            risk_pts.append(("✔", "#10B981", f"ภาระหนี้สินต่ำ D/E = {de_val_r:.2f} เท่า"))
-        else:
-            risk_pts.append(("●", "#EF4444", f"ภาระหนี้สินค่อนข้างสูง D/E = {de_val_r:.2f} เท่า"))
-
-        if dd_val < 30:
-            risk_pts.append(("✔", "#10B981", f"Max Drawdown {dd_val:.1f}% อยู่ในเกณฑ์ควบคุมได้"))
-        else:
-            risk_pts.append(("●", "#EF4444", f"Max Drawdown {dd_val:.1f}% ค่อนข้างลึก ควรระวังช่วงตลาดผันผวน"))
-
-        risk_pts_html = "".join([
-            f'<div style="display:flex; gap:6px; margin-bottom:3px;"><span style="color:{c};">{icon}</span><span>{txt}</span></div>'
-            for icon, c, txt in risk_pts
-        ])
-
-        st.markdown(
-            f"""<div style="background-color:#FFFFFF; border:1px solid #D9E2EC; border-radius:12px; padding:14px; min-height:210px; display:flex; flex-direction:column; justify-content:space-between;">
-    <div style="font-size:16px; font-weight:bold; color:#64748B; letter-spacing:0.5px;">RISK FACTORS HIGHLIGHT ({ctx.selected_ticker})</div>
-    <div style="font-size:15px; color:#334155; line-height:1.45; margin:auto 0;">{risk_pts_html}</div>
-    </div>""",
-            unsafe_allow_html=True
-        )
-
-    # ---------------- EXPLAINABLE RISK SUMMARY ----------------
-    with r4_c2:
-        risk_score_line = f"<b>{risk_score}/100 ({risk_status})</b>" if risk_score_available else "<b>N/A</b> (ข้อมูลราคาย้อนหลังไม่พอ)"
-        st.markdown(
-            f"""<div style="background-color:#FFFFFF; border:1px solid #D9E2EC; border-radius:12px; padding:14px; min-height:210px; display:flex; flex-direction:column; justify-content:space-between;">
-    <div>
-    <div style="font-size:16px; font-weight:bold; color:#64748B; letter-spacing:0.5px; margin-bottom:6px;">EXPLAINABLE RISK SUMMARY</div>
-    <p style="font-size:14px; color:#334155; line-height:1.5; margin:0;">
-    หุ้น <b>{ctx.selected_ticker}</b> มีคะแนนความเสี่ยงรวมอยู่ที่ {risk_score_line} โดย Beta = {beta_val:.2f}, Volatility รายปี = {vol_val:.1f}%, และ Max Drawdown สูงสุด = {dd_val:.1f}% ในช่วง 2023-2025
-    </p>
-    </div>
-    <div style="font-size:14px; color:#B45309; background:rgba(245,158,11,0.08); border-left:3px solid #F59E0B; padding:5px 8px; border-radius:4px;">
-    <b>ข้อสังเกต:</b> ควรติดตามความผันผวนของตลาดโลกและนโยบายอัตราดอกเบี้ยอย่างต่อเนื่อง
-    </div>
-    </div>""",
-            unsafe_allow_html=True
-        )
-
-    render_nav_footer("m5", prev_page=" AI Prediction", next_page=" Industry Benchmark")
+def build_risk_rolling_history(df_price_ticker):
+    """rolling 30 วันของ Volatility และ Drawdown (ไม่เปลี่ยนในรอบนี้)"""
+    df = df_price_ticker.sort_values(by='date').reset_index(drop=True)
+    df = _clean_price_series(df, 'close')
+    if len(df) < 30:
+        return pd.DataFrame(columns=['date', 'rolling_vol_30d', 'drawdown_pct'])
+    df['date'] = pd.to_datetime(df['date'])
+    df['returns'] = df['close'].pct_change()
+    df['rolling_vol_30d'] = df['returns'].rolling(30).std() * np.sqrt(252) * 100
+    cum_max = df['close'].cummax()
+    df['drawdown_pct'] = (df['close'] - cum_max) / cum_max * 100
+    out = df[['date', 'rolling_vol_30d', 'drawdown_pct']].dropna(subset=['rolling_vol_30d']).copy()
+    return out.set_index('date').resample('W').last().dropna().reset_index()

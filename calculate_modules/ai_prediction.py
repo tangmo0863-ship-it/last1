@@ -1,566 +1,160 @@
 """
-pages_content/ai_prediction.py
---------------------------
-หน้า "AI Prediction" ของ CIS Dashboard
+calculate_modules/ai_prediction.py
+--------------------------------------
+สูตรคำนวณโมดูล "AI Prediction" (🔮) — คู่กับ pages_content/ai_prediction.py
 
-วิธีทดสอบหน้านี้แบบเดี่ยว (ไม่ต้องรอทีมคนอื่น):
-    streamlit run preview_my_page.py
-    (แล้วเลือกโมดูลนี้จาก dropdown ในไฟล์ preview_my_page.py)
+=== DATA CONTRACT (key เดิมครบ + key ใหม่) ===
+train_and_predict_ai(df_price_ticker, ticker) คืน (metrics_dict, feature_importance_dict, backtest_df)
+    metrics_dict key เดิม: ai_score, prob_up, accuracy, baseline_accuracy, precision, recall, f1_score,
+                          roc_auc, ai_signal, is_fallback
+    key ใหม่: model_has_edge, n_train, n_test, n_purged, ai_status
+    backtest_df: [date, actual_close, predicted_up_prob]
 
-ข้อมูลที่ใช้ได้ใน ctx (ดูนิยามเต็มใน common.py -> class PageContext):
-    ctx.selected_ticker, ctx.stock_info, ctx.stock_daily, ctx.fin_stock, ctx.sector_peers,
-    ctx.scores_df, ctx.fin_df, ctx.feat_imp_df, ctx.backtest_df, ctx.risk_hist_df,
-    ctx.health_yearly_df, ctx.fair_value_yearly_df,
-    ctx.current_price, ctx.change_pct, ctx.change_val, ctx.change_color, ctx.change_sign, ctx.arrow_sign
-
-ห้ามแก้ CSS ส่วนกลางหรือ helper function ใน common.py จากไฟล์นี้ — ถ้าจำเป็นต้องแก้ ให้แจ้ง Layout Lead ก่อน
-
-=== CHANGELOG (v6 — ลดหน้าจอเหลือ Probability เป็นหลัก, ย้าย Accuracy ไปใช้แค่ในรายงาน) ===
-- ตัดการ์ด KPI "SCORE" ออก (เหลือ 4 การ์ด: Price, Direction, Probability, Recommendation)
-- เพิ่มจุดสีเล็กๆ (●) ข้างตัวเลข Probability สะท้อนความน่าเชื่อถือของโมเดล (มาจาก reliability_low เดิม)
-  โดยไม่แสดงตัวเลข accuracy/baseline บนหน้าจอเลย — ใช้แค่สีเป็นสัญญาณ
-- ตัดตัวเลข accuracy/baseline ออกจากประโยคอธิบายในกล่อง PREDICTION
-- ตัดส่วน "MODEL PERFORMANCE" (Accuracy/Precision/ROC-AUC/F1 + Historical Backtest chart) ออกทั้งหมด
-- ตัด expander "Model & Data Detail" ออก (เก็บไว้ใส่รายงาน/สไลด์แยกต่างหาก ไม่ใส่ในตัว Dashboard)
-- calculate_modules/ai_prediction.py ไม่มีการแก้ไขใดๆ — ยังคำนวณและเก็บ accuracy, precision, recall,
-  baseline_accuracy ไว้ครบใน DB เหมือนเดิมทุกประการ เพื่อให้ดึงไปสรุปทำรายงานได้ภายหลัง
-
-=== MERGE NOTE (รวม Branch main x Copy-ทีมออกแบบ) ===
-- ธีม/เลย์เอาต์ทั้งหมดยึดตามทีมออกแบบ (การ์ดพื้นขาว, helper functions _kpi_card/_kpi_sub/_metric_cell)
-- Logic การซ่อนตัวเลข accuracy/baseline และการเตือนความน่าเชื่อถือของโมเดล (reliability_low,
-  จุดสัญญาณข้าง Probability, เครื่องหมาย ⚠ ต่อท้ายคำแนะนำ) ยึดตาม main ทั้งหมด
-- ตัดส่วน "MODEL PERFORMANCE" และ expander "Model & Data Detail" ออกตามมติ main (ไม่โชว์ตัวเลขดิบ)
-- ปุ่มเปลี่ยนหน้าด้านล่างใช้ label แบบไม่มี emoji ตามทีมออกแบบ
-
-=== PATCH NOTE (เพิ่มการ์ด AI SCORE แบบ donut ใน R1 ตามสไตล์หน้า Overview) ===
-- เพิ่มฟังก์ชัน _score_donut_card() วาดวงแหวนคะแนน (conic-gradient) พร้อม badge/คำอธิบาย
-  สไตล์เดียวกับการ์ด module ในหน้า Overview
-- แถว KPI แรกของหน้า (เดิม 4 คอลัมน์: Price, Direction, Probability, Recommendation)
-  ขยายเป็น 5 คอลัมน์ โดยเพิ่ม "AI SCORE" (ใช้ ctx.stock_info['ai_score'] ตัวเดียวกับที่หน้า
-  Overview ใช้) ไว้เป็นคอลัมน์แรกสุด ใช้ threshold เดียวกับหน้า Overview (>=70 เขียว,
-  >=50 เหลือง, ต่ำกว่านั้นแดง) เพื่อให้ความหมายสีตรงกันทั้งสองหน้า
-- ไม่กระทบ logic การคำนวณ prob_up / signal / reliability_low หรือส่วนอื่นของหน้าเลย
+=== CHANGELOG (รอบแก้ "ตัวเลขต้องถูกก่อน") ===
+- [FIX-A1] เปลี่ยน Feature จาก "ระดับราคาเป็นบาท" (close, EMA20, EMA50, MACD) เป็น "ค่าสัดส่วน"
+  เหตุผล: Random Forest แบ่งข้อมูลด้วยเกณฑ์ตัวเลขตายตัว เช่น "close > 145 บาท" ที่เรียนจากปี 2023-24
+  พอราคาปี 2025 ออกนอกช่วงเดิม ทุกแถวจะตกกิ่งเดียวกัน ทำนายเหมือนกันหมด (ต้นไม้ extrapolate ไม่ได้)
+  ค่าสัดส่วน (ราคาห่าง EMA กี่ %, ผลตอบแทนย้อนหลัง, Volume เทียบค่าเฉลี่ย) ใช้ได้ทุกช่วงราคา
+- [FIX-A2] Purge รอยต่อ Train/Test: label ของแถวท้ายปี 2024 ใช้ราคาเดือน ม.ค. 2025 (อยู่ในชุด Test)
+  → ตัดแถว Train ที่วันของ label อยู่ในปี 2025 ทิ้ง (ตามแนวคิด Purging ของ López de Prado, 2018)
+- [FIX-A3] เลิกคืนค่าปลอมตอนข้อมูลไม่พอ (เดิม accuracy=75%, ai_score=65) → คืน None ทั้งหมด + is_fallback=True
+- [FIX-A4] เลิก clip ai_score ที่ 30-95 → 0-100
+- [FIX-A5] ถ้าโมเดลไม่ชนะการเดาแบบง่าย (accuracy <= baseline หรือ ROC-AUC <= 0.5) → model_has_edge=False,
+  ai_signal='NO EDGE', ai_score=None (ไม่ถูกนับในคะแนนรวม) เพื่อไม่ให้ Dashboard แสดง STRONG BUY
+  จากโมเดลที่ทำนายได้ไม่ดีกว่าการเดา
 """
 
-import streamlit as st
-import pandas as pd
 import numpy as np
-import plotly.graph_objects as go
-import plotly.express as px
-from plotly.subplots import make_subplots
+import pandas as pd
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
 
-from common import fmt_mb, fmt_ratio, safe, show_chart, render_nav_footer, COMPANY_NAMES, SECTOR_MAP
+from calculate_modules.common import clean_float
 
+PREDICTION_HORIZON_DAYS = 10
+TEST_START = '2025-01-01'
 
-GREEN = "#10B981"
-AMBER = "#F59E0B"
-RED = "#EF4444"
-BLUE = "#0284C7"
-MUTED = "#64748B"
-
-
-def _hex_to_rgba(hex_color, alpha):
-    hex_color = hex_color.lstrip('#')
-    r, g, b = int(hex_color[0:2], 16), int(hex_color[2:4], 16), int(hex_color[4:6], 16)
-    return f"rgba({r},{g},{b},{alpha})"
-
-
-def _section_title(text):
-    return f"""<div style="background-color:#FFFFFF; border:1px solid #D9E2EC; border-radius:12px 12px 0 0; padding:14px 18px 2px 18px;">
-<div><span style="font-size:13px; font-weight:bold; color:{MUTED}; letter-spacing:0.5px;">{text}</span></div></div>"""
+# FIX-A1: ชื่อ feature ที่จะโชว์ในกราฟ Feature Importance (หน้า UI ต้องแก้ข้อความ "6 ตัวชี้วัด" เป็นจำนวนนี้)
+FEATURES = [
+    'dist_ema20',      # close / EMA20 - 1        ราคาห่างเส้น EMA20 กี่ %
+    'ema20_vs_ema50',  # EMA20 / EMA50 - 1        ความชันเทรนด์
+    'macd_norm',       # MACD / close             MACD เทียบขนาดราคา
+    'macd_hist_norm',  # MACD Histogram / close   แรงเร่งโมเมนตัม
+    'RSI14',
+    'ADX',
+    'volume_ratio',    # volume / Volume Avg 20
+    'ret_5d', 'ret_10d', 'ret_20d',   # ผลตอบแทนย้อนหลัง 5/10/20 วัน
+    'vol_20d',         # ความผันผวนรายวัน 20 วัน (std ของผลตอบแทน)
+]
 
 
-KPI_CARD_HEIGHT = 148  # ความสูงร่วมของการ์ด KPI ทั้งแถว (รวมการ์ด AI SCORE donut) — แก้ค่าเดียวจุดนี้ ทุกการ์ดจะสูงเท่ากันหมด
+def _build_features(df):
+    """สร้าง feature เชิงสัดส่วนจากคอลัมน์ในตาราง stock_daily_prices"""
+    num = lambda c: pd.to_numeric(df[c].apply(clean_float, default=np.nan), errors='coerce') \
+        if c in df.columns else pd.Series(np.nan, index=df.index)
+    close, ema20, ema50 = num('close'), num('EMA20'), num('EMA50')
+    macd, hist = num('MACD'), num('macd_hist')
+    volume, vol_avg = num('volume'), num('Volume Avg')
+
+    f = pd.DataFrame(index=df.index)
+    f['dist_ema20'] = close / ema20 - 1
+    f['ema20_vs_ema50'] = ema20 / ema50 - 1
+    f['macd_norm'] = macd / close
+    f['macd_hist_norm'] = hist / close
+    f['RSI14'] = num('RSI14')
+    f['ADX'] = num('ADX')
+    f['volume_ratio'] = volume / vol_avg.replace(0, np.nan)
+    ret = close.pct_change()
+    f['ret_5d'] = close.pct_change(5)
+    f['ret_10d'] = close.pct_change(10)
+    f['ret_20d'] = close.pct_change(20)
+    f['vol_20d'] = ret.rolling(20).std()
+    return f.replace([np.inf, -np.inf], np.nan), close
 
 
-def _kpi_card(
-    label,
-    value_html,
-    sub_html="",
-    value_color="#0F172A",
-    value_size=28,
-    border="#D9E2EC",
-    bg_color="#FFFFFF",
-    label_color=MUTED,
-    height=KPI_CARD_HEIGHT
-):
-    """การ์ด KPI ใบเดียว — label อยู่บนสุดชิดซ้ายเสมอ ส่วน value/sub จะถูกจัดกลุ่ม
-    แล้วดันไปอยู่ล่างสุดชิดซ้าย (justify-content:space-between ระหว่าง label กับ
-    กลุ่ม value+sub) แทนการจัดกึ่งกลางแนวตั้งแบบเดิม เพื่อให้ทุกการ์ดในแถวมีหัวข้อ
-    ชิดซ้ายบนและข้อมูลชิดซ้ายล่างตรงกันหมด"""
-    return (
-        f'<div style="background-color:{bg_color}; border:1px solid {border}; border-radius:12px; padding:14px 16px; text-align:left; height:{height}px; box-sizing:border-box; display:flex; flex-direction:column; justify-content:space-between;">'
-        f'<div style="font-size:11px; font-weight:bold; color:{label_color}; letter-spacing:1px;">{label}</div>'
-        f'<div>'
-        f'<div style="font-size:{value_size}px; font-weight:bold; color:{value_color}; line-height:1.2;">{value_html}</div>'
-        f'{sub_html}'
-        f'</div>'
-        f'</div>'
-    )
+def _fallback(reason, n_train=0, n_test=0):
+    """FIX-A3: ข้อมูลไม่พอ → ไม่สร้างตัวเลขขึ้นมาเอง"""
+    metrics = {k: None for k in ['ai_score', 'prob_up', 'accuracy', 'baseline_accuracy', 'precision',
+                                  'recall', 'f1_score', 'roc_auc']}
+    metrics.update({'ai_signal': 'INSUFFICIENT DATA', 'is_fallback': True, 'model_has_edge': False,
+                    'n_train': n_train, 'n_test': n_test, 'n_purged': 0, 'ai_status': reason})
+    return (metrics, {f: 0.0 for f in FEATURES},
+            pd.DataFrame(columns=['date', 'actual_close', 'predicted_up_prob']))
 
 
-def _kpi_sub(text, color=MUTED, bold=False):
-    weight = "bold" if bold else "normal"
-    return f'<div style="font-size:11px; font-weight:{weight}; color:{color}; margin-top:2px;">{text}</div>'
+def train_and_predict_ai(df_price_ticker, ticker):
+    """Module 4: AI Prediction (Train 2023-2024 / Test 2025)"""
+    df = df_price_ticker.copy().sort_values(by='date').reset_index(drop=True)
+    df['date'] = pd.to_datetime(df['date'])
+    feats, close = _build_features(df)
+    df = pd.concat([df[['date']], feats], axis=1)
+    df['close'] = close
 
+    future_close = close.shift(-PREDICTION_HORIZON_DAYS)
+    df['target'] = np.where(future_close.notna(), (future_close > close).astype(int), np.nan)
+    df['label_date'] = df['date'].shift(-PREDICTION_HORIZON_DAYS)   # วันที่ที่ใช้ตัดสิน label
 
-def _metric_cell(label, value):
-    return (
-        f'<div style="background:#F8FAFC; border:1px solid #D9E2EC; border-radius:8px; padding:14px 6px; text-align:center;">'
-        f'<div style="font-size:12px; color:{MUTED};">{label}</div>'
-        f'<div style="font-size:21px; font-weight:bold; color:#0F172A; line-height:1.35;">{value}</div></div>'
-    )
+    df_model = df.dropna(subset=FEATURES + ['target'])
+    test_start = pd.Timestamp(TEST_START)
+    train_all = df_model[df_model['date'] < test_start]
+    train_data = train_all[train_all['label_date'] < test_start]          # FIX-A2: purge
+    n_purged = len(train_all) - len(train_data)
+    test_data = df_model[df_model['date'] >= test_start]
 
+    if len(train_data) < 50 or len(test_data) < 20:
+        return _fallback(f'ข้อมูลไม่พอ (train={len(train_data)}, test={len(test_data)})',
+                         len(train_data), len(test_data))
 
-def _score_donut_card(label, score, badge, desc, color, height=None, display=None):
-    """การ์ด SCORE แบบวงแหวน (donut) — เป็นการ์ด "ไม่ไฮไลต์" เหมือนการ์ด KPI ทั่วไป
-    (พื้นขาว ขอบเทาอ่อนมาตรฐาน #D9E2EC เหมือนการ์ด PRICE) วงแหวนเองยังคงใช้สี
-    ตามสถานะคะแนน (color) เพื่อสื่อความหมาย แต่ตัวการ์ดไม่มีการไฮไลต์กรอบ/พื้นหลัง
-    label อยู่บนสุดชิดซ้าย ส่วนวงแหวน+badge/คำอธิบายถูกดันไปอยู่ล่างสุดชิดซ้าย
-    (justify-content:space-between) เหมือนการ์ด KPI ใบอื่นทุกประการ ความสูงผูกกับ
-    KPI_CARD_HEIGHT เดียวกัน เพื่อให้ทุกการ์ดในแถวสูงเท่ากันเสมอ"""
-    h = height or KPI_CARD_HEIGHT
-    return f"""<div style="background-color:#FFFFFF; border:1px solid #D9E2EC; border-radius:12px; padding:14px 16px; text-align:left; height:{h}px; box-sizing:border-box; display:flex; flex-direction:column; justify-content:space-between;">
-<div style="font-size:11px; font-weight:bold; color:{MUTED}; letter-spacing:1px;">{label}</div>
-<div style="display:flex; align-items:center; gap:12px;">
-<div style="width:78px; height:78px; border-radius:50%;
-            background:conic-gradient({color} 0% {score}%, #E2E8F0 {score}% 100%);
-            display:flex; align-items:center; justify-content:center; flex-shrink:0;">
-    <div style="width:60px; height:60px; border-radius:50%; background-color:#FFFFFF;
-                display:flex; flex-direction:column; align-items:center; justify-content:center;">
-        <span style="font-size:19px; font-weight:bold; color:#0F172A; line-height:1;">{display if display is not None else score}</span>
-        <span style="font-size:10.5px; color:{MUTED};">/100</span>
-    </div>
-</div>
-<div style="text-align:left;">
-<div style="color:{color}; font-size:15px; font-weight:bold; line-height:1.2;">{badge}</div>
-<div style="font-size:11px; color:#475569; line-height:1.3; margin-top:2px;">{desc}</div>
-</div>
-</div>
-</div>"""
+    X_train, y_train = train_data[FEATURES], train_data['target'].astype(int)
+    X_test, y_test = test_data[FEATURES], test_data['target'].astype(int)
+    baseline_acc = float(max(y_test.mean(), 1 - y_test.mean()) * 100)
 
+    model = RandomForestClassifier(n_estimators=200, max_depth=4, min_samples_leaf=10,
+                                   random_state=42, n_jobs=-1)
+    model.fit(X_train, y_train)
 
-def render(ctx):
-    st.markdown(f"""<div style="margin-bottom:20px;">
-<div style="font-size:12px; color:{MUTED}; margin-bottom:4px;">Home / Module 4 / AI Prediction</div>
-<div style="font-size:19px; font-weight:700; color:#0F172A; letter-spacing:0.3px;">AI PREDICTION</div>
-<div style="font-size:12px; color:#64748B; margin-top:4px;">ประเมินทิศทางราคาหุ้นในอีก 10 วันทำการด้วยโมเดล Random Forest</div>
-</div>""", unsafe_allow_html=True)
+    test_pred = model.predict(X_test)
+    test_proba = model.predict_proba(X_test)[:, 1]
+    acc = accuracy_score(y_test, test_pred) * 100
+    prec = precision_score(y_test, test_pred, zero_division=0) * 100
+    rec = recall_score(y_test, test_pred, zero_division=0) * 100
+    f1 = f1_score(y_test, test_pred, zero_division=0) * 100
+    auc = roc_auc_score(y_test, test_proba) if y_test.nunique() > 1 else None
 
-    # ============================================================
-    # ถ้าเป็นค่า fallback (ข้อมูลไม่พอเทรนโมเดลจริง) ห้ามแสดง KPI/กราฟเหมือนเป็นผลจริง
-    # ============================================================
-    if ctx.stock_info.get('is_fallback', False):
-        st.markdown(f"""<div style="background:rgba(239,68,68,0.1); border:1px solid {RED}; border-radius:12px; padding:28px; text-align:center;">
-<div style="font-size:21px; font-weight:bold; color:{RED}; margin-bottom:10px;">⚠ ข้อมูลไม่เพียงพอสำหรับ {ctx.selected_ticker}</div>
-<p style="font-size:15px; color:#334155; line-height:1.65; margin:0; max-width:640px; margin:0 auto;">
-หุ้นตัวนี้มีข้อมูลราคาย้อนหลังไม่พอสำหรับเทรนโมเดล Random Forest จริง (ต้องการอย่างน้อย Train 50 แถว และ Test 20 แถว)
-ตัวเลขที่เคยแสดงในหน้านี้เป็นเพียง<b>ค่าตั้งต้นสำรอง (placeholder)</b> ไม่ใช่ผลจากการเทรนโมเดลจริงแต่อย่างใด
-จึง<b style="color:{RED};">ไม่ควรใช้ประกอบการตัดสินใจลงทุน</b></p>
-</div>""", unsafe_allow_html=True)
-        render_nav_footer("m4", prev_page=" Entry Timing", next_page=" Risk Analysis")
-        return
+    # ทำนายวันล่าสุด (ใช้แถวล่าสุดที่ feature ครบ — ไม่ต้องมี label)
+    latest = df.dropna(subset=FEATURES)
+    prob_up = float(model.predict_proba(latest[FEATURES].iloc[[-1]])[0][1] * 100) if not latest.empty else None
 
-    # ============================================================
-    # แหล่งความจริงเดียวของสถานะทำนาย + ความน่าเชื่อถือ
-    # หมายเหตุ: acc_val, baseline_val, prec_val, rec_val ใช้ "คำนวณสี/สัญลักษณ์เตือน" เท่านั้น
-    # จะไม่ถูกพิมพ์เป็นตัวเลขที่ใดในหน้านี้เลย (เก็บไว้ในฐานข้อมูลเพื่อใช้ทำรายงานแยกต่างหาก)
-    # ============================================================
-
-    prob_up = safe(ctx.stock_info.get('prob_up'), 50)
-    down_prob = round(100 - prob_up, 1)
-    acc_val = safe(ctx.stock_info.get('accuracy'), 50)
-    baseline_val = safe(ctx.stock_info.get('baseline_accuracy'), acc_val)
-    prec_val = safe(ctx.stock_info.get('precision'), 1)
-    rec_val = safe(ctx.stock_info.get('recall'), 1)
-    signal = ctx.stock_info.get('ai_signal', '-')
-
-    reliability_low = (acc_val <= baseline_val) or (prec_val == 0) or (rec_val == 0)
-
-    # ============================================================
-    # ธีมสีของทั้งหน้า (PATCH: เปลี่ยนให้ยึดตามสีของการ์ด AI SCORE เป็นหลัก
-    # แทนการคำนวณจาก prob_up เหมือนเดิม — ai_score_val/score_color ถูกย้ายมา
-    # คำนวณตรงนี้ก่อน เพื่อให้ status_color ที่ใช้ระบายสีทั่วทั้งหน้า (การ์ด
-    # DIRECTION, RECOMMENDATION, จุดสัญญาณข้าง PROBABILITY, กราฟ FORECAST ฯลฯ)
-    # อ้างอิงจากสีเดียวกับวงแหวน AI SCORE เสมอ ไม่กระทบ logic คำนวณ prob_up /
-    # signal / reliability_low ที่ยังใช้แสดงข้อความ direction/คำแนะนำตามเดิม)
-    # ============================================================
-    # [FIX-UI2] ai_score = None แปลว่าโมเดลไม่ชนะการเดาแบบง่าย (NO EDGE) — ห้ามแทนด้วย 50 (NEUTRAL ปลอม)
-    _raw_ai = ctx.stock_info.get('ai_score')
-    ai_no_edge = _raw_ai is None or (isinstance(_raw_ai, float) and np.isnan(_raw_ai))
-    ai_score_val = 0 if ai_no_edge else int(round(safe(_raw_ai, 0)))
-    if ai_no_edge:
-        score_badge, score_desc = "NO EDGE", "โมเดลยังทำนายได้ไม่ดีกว่าการเดาแบบง่าย จึงไม่นำมาให้คะแนน"
-    elif ai_score_val >= 70:
-        score_badge, score_desc = "POSITIVE", "โอกาสปรับตัวขึ้นในระดับที่ดี"
-    elif ai_score_val >= 50:
-        score_badge, score_desc = "NEUTRAL", "แนวโน้มเคลื่อนไหวในกรอบ"
+    has_edge = bool(auc is not None and auc > 0.5 and acc > baseline_acc)   # FIX-A5
+    if prob_up is None:
+        ai_score, sig = None, 'INSUFFICIENT DATA'
+    elif not has_edge:
+        ai_score, sig = None, 'NO EDGE'
     else:
-        score_badge, score_desc = "CAUTION", "โอกาสปรับตัวขึ้นในระดับต่ำ"
+        ai_score = round(float(np.clip(prob_up * 0.7 + acc * 0.3, 0, 100)), 1)   # FIX-A4
+        sig = "STRONG BUY" if prob_up >= 70 else ("ACCUMULATE" if prob_up >= 50 else "CAUTION")
 
-    score_color = MUTED if ai_no_edge else (GREEN if ai_score_val >= 70 else (AMBER if ai_score_val >= 50 else RED))
+    feature_importance = {f: round(float(imp), 4) for f, imp in zip(FEATURES, model.feature_importances_)}
+    backtest_df = pd.DataFrame({
+        'date': test_data['date'].dt.strftime('%Y-%m-%d').values,
+        'actual_close': test_data['close'].values,
+        'predicted_up_prob': test_proba,
+    })
 
-    # PATCH: เอา override ที่เคยลดเกรดสีเขียว -> เหลือง เมื่อ reliability_low ออก
-    # เพราะทำให้ status_color ไม่ตรงกับสีวงแหวนของการ์ด AI SCORE อีกต่อไป (การ์ด
-    # AI SCORE ใช้ score_color ตรงๆ เสมอ) ตอนนี้ status_color = score_color เป๊ะๆ
-    # ไม่มีการปรับลดสีเพิ่มเติม — ความไม่น่าเชื่อถือของโมเดลยังคงสื่อสารผ่านกล่อง
-    # คำเตือนสีแดง (warn_line) แยกต่างหากเหมือนเดิม ไม่ผสมกับธีมสีหลักอีกต่อไป
-    status_color = score_color
-
-    direction_th = "ขาขึ้น" if prob_up >= 50 else "ขาลง"
-    signal_display = f"{signal} ⚠" if reliability_low else signal
-
-    # ============================================================
-    # 1) OVERVIEW — แถบ KPI: c1 Price, c2 Direction, c3 Probability,
-    # c4 AI Score (donut), c5 Recommendation
-    #
-    # กติกาสีใหม่ตามที่ทีมออกแบบกำหนด:
-    # - มีแค่ DIRECTION เท่านั้นที่ไฮไลต์แบบ "กรอบ + พื้นอ่อน" ตามสีธีม (status_color)
-    # - RECOMMENDATION ไฮไลต์แรงสุด: พื้นทึบสีธีมเต็มใบ ตัวหนังสือเปลี่ยนเป็นสีขาว
-    # - การ์ดที่เหลือ (PRICE, PROBABILITY, AI SCORE) เป็นพื้นขาว ไม่มีกรอบสีไฮไลต์
-    #   เหมือนการ์ด PRICE (ใช้ค่า default ของ _kpi_card ทั้งหมด)
-    # ============================================================
-
-    k1, k2, k3, k4, k5 = st.columns(5)
-
-    with k1:
-        st.markdown(
-            _kpi_card(
-                "PRICE",
-                f"{ctx.current_price:,.2f}",
-                _kpi_sub(
-                    f"{ctx.change_val:+.2f} ({ctx.change_pct:+.2f}%) {ctx.arrow_sign}",
-                    ctx.change_color,
-                    bold=True
-                )
-            ),
-            unsafe_allow_html=True
-        )
-
-    with k2:
-        st.markdown(
-            _kpi_card(
-                "DIRECTION (10D)",
-                direction_th,
-                _kpi_sub("10 Trading Days"),
-                value_color=status_color,
-                border=status_color,
-                bg_color=_hex_to_rgba(status_color, 0.08)
-            ),
-            unsafe_allow_html=True
-        )
-
-    with k3:
-        # จุดสัญญาณเล็กๆ ข้างเลข Probability สะท้อนความน่าเชื่อถือของโมเดล (ไม่โชว์ตัวเลข accuracy ดิบ)
-        # การ์ดนี้ไม่ไฮไลต์กรอบ/พื้นหลังแล้ว (เป็นพื้นขาวเหมือน PRICE) — เหลือแค่สีตัวเลข/จุดสัญญาณ
-        prob_value_html = (
-            f'<span style="display:flex; align-items:center; gap:8px;">'
-            f'<span>{prob_up:.0f}%</span>'
-            f'<span style="display:inline-block; width:9px; height:9px; border-radius:50%; background:{status_color};"></span>'
-            f'</span>'
-        )
-        st.markdown(
-            _kpi_card(
-                "PROBABILITY",
-                prob_value_html,
-                _kpi_sub(f"Down: {down_prob:.0f}%"),
-                value_color=status_color
-            ),
-            unsafe_allow_html=True
-        )
-
-    with k4:
-        st.markdown(
-            _score_donut_card("AI SCORE", ai_score_val, score_badge, score_desc, score_color,
-                              display="N/A" if ai_no_edge else None),
-            unsafe_allow_html=True
-        )
-
-    with k5:
-        # RECOMMENDATION เน้นสุด: พื้นทึบสีธีมเต็มใบ + ตัวหนังสือ/label เป็นสีขาว
-        st.markdown(
-            _kpi_card(
-                "RECOMMENDATION",
-                signal_display,
-                value_color="#FFFFFF",
-                value_size=21,
-                border=status_color,
-                bg_color=status_color,
-                label_color="rgba(255,255,255,0.85)"
-            ),
-            unsafe_allow_html=True
-        )
-
-    st.markdown("<div style='margin-top:22px;'></div>", unsafe_allow_html=True)
-
-    # ============================================================
-    # 2) PREDICTION — gauge + ประโยคอธิบาย (ไม่มีตัวเลข accuracy/baseline)
-    # ============================================================
-
-    st.markdown(_section_title("📈 PREDICTION"), unsafe_allow_html=True)
-
-    warn_line = ""
-    if reliability_low:
-        warn_line = (
-            f'<div style="font-size:12px; color:{RED}; background:rgba(239,68,68,0.1); border:1px solid {RED}; '
-            f'border-radius:8px; padding:10px 14px; margin-top:12px; line-height:1.55;">'
-            f'⚠ ความแม่นยำของโมเดลสำหรับหุ้นตัวนี้อยู่ในเกณฑ์ที่ควรใช้ด้วยความระมัดระวังเป็นพิเศษ</div>'
-        )
-
-    # ป้าย badge สีตามธีม (score_badge/status_color เดียวกับการ์ด AI SCORE) พร้อมจุดวงกลม
-    # เล็กๆ สีขาวบนพื้นสีธีม แทนไอคอนเตือนหน้าคำว่า POSITIVE/NEUTRAL/CAUTION
-    badge_dot = (
-        f'<span style="display:inline-flex; align-items:center; justify-content:center; '
-        f'width:14px; height:14px; border-radius:50%; background:{status_color}; color:#FFFFFF; '
-        f'font-size:10px; font-weight:bold; margin-right:5px; flex-shrink:0;">!</span>'
-    )
-
-    # สีของป้าย "ขาลง"/"ขาขึ้น" ต้องล้อตามทิศทางที่โมเดลทำนายจริง (direction_th)
-    # เหมือนกับการ์ด DIRECTION (10D) — ฝั่งที่ตรงกับทิศทางจริงจะได้สีธีม (status_color)
-    # ส่วนอีกฝั่งเป็นสีเทาเสมอ ไม่ใช่ไล่สีตายตัวที่ฝั่งซ้าย/ขวาแบบเดิม
-    # ป้ายที่ตรงกับทิศทางจริง (direction_th) ต้องอยู่ "ฝั่งซ้ายเสมอ" (สลับคำ ไม่ใช่แค่สลับสี)
-    # ส่วนป้ายอีกด้าน (ทิศตรงข้าม) จะไปอยู่ฝั่งขวาเสมอเป็นสีเทา — ตัวเลข % ใหญ่/100%
-    # อยู่ตำแหน่งคงที่เหมือนเดิม (ตัวเลขซ้าย, 100% ขวา) ไม่สลับข้างตามทิศทางอีกต่อไป
-    if direction_th == "ขาขึ้น":
-        left_dir_label, right_dir_label = "ขาขึ้น", "ขาลง"
-    else:
-        left_dir_label, right_dir_label = "ขาลง", "ขาขึ้น"
-
-    st.markdown(
-        f"""<div style="background-color:#FFFFFF; border:1px solid #D9E2EC; border-top:none; border-radius:0 0 12px 12px; padding:22px 24px;">
-<div style="display:flex; gap:0; flex-wrap:wrap; align-items:stretch;">
-
-<div style="flex:0 0 260px; max-width:100%; border-right:1px solid #E2E8F0; padding-right:24px; margin-right:24px; display:flex; flex-direction:column; justify-content:center;">
-
-<div style="font-size:18px; font-weight:800; color:#0F172A;">AI SIGNAL</div>
-<div style="font-size:12px; color:{MUTED}; margin-top:2px; margin-bottom:20px;">สัญญาณจากโมเดล AI</div>
-
-<div style="display:flex; justify-content:space-between; font-size:13px; font-weight:bold; margin-bottom:6px;">
-<span style="color:{status_color};">{left_dir_label}</span>
-<span style="color:{MUTED};">{right_dir_label}</span>
-</div>
-
-<div style="width:100%; height:8px; background:#E2E8F0; border-radius:6px; overflow:hidden;">
-<div style="width:{prob_up:.0f}%; height:100%; background:{status_color}; border-radius:6px;"></div>
-</div>
-
-<div style="display:flex; justify-content:space-between; align-items:flex-end; margin-top:8px;">
-<span style="font-size:26px; font-weight:800; color:{status_color}; line-height:1;">{prob_up:.0f}%</span>
-<span style="font-size:12px; color:{MUTED};">100%</span>
-</div>
-
-</div>
-
-<div style="flex:1; min-width:300px; display:flex; flex-direction:column; justify-content:center;">
-
-<div style="display:flex; align-items:flex-start; gap:14px;">
-
-<div style="width:38px; height:38px; border-radius:50%; background:rgba(56,189,248,0.12);
-            display:flex; align-items:center; justify-content:center; font-size:18px; flex-shrink:0;">💡</div>
-
-<div style="flex:1; min-width:0;">
-
-<div style="display:flex; align-items:flex-start; justify-content:space-between; gap:12px; flex-wrap:wrap;">
-<div style="font-size:16px; font-weight:700; color:#0F172A; line-height:1.5;">
-โมเดล Random Forest ประเมินว่า <b>{ctx.selected_ticker}</b> มีโอกาส
-<b style="color:{status_color};">{direction_th}</b> <b>{prob_up:.0f}%</b> ในอีก 10 วันทำการ
-</div>
-
-<div style="background:{_hex_to_rgba(status_color, 0.12)}; color:{status_color}; border-radius:14px;
-            padding:4px 12px; font-size:12px; font-weight:700; white-space:nowrap;
-            display:flex; align-items:center; flex-shrink:0;">
-{badge_dot}{score_badge}
-</div>
-</div>
-
-<div style="font-size:13.5px; color:{MUTED}; line-height:1.6; margin-top:8px;">
-โดยมีปัจจัยหลักจากความผันผวนของราคาและตัวชี้วัดทางเทคนิคบางตัว ที่ส่งผลต่อทิศทางราคาในระยะสั้น
-</div>
-
-{warn_line}
-
-</div>
-</div>
-
-<div style="display:flex; align-items:center; gap:8px; margin-top:18px; font-size:13px; color:#334155;">
-<span style="font-size:15px;">📅</span> Horizon: <b>10 Trading Days</b>
-</div>
-
-</div>
-</div>
-</div>""",
-        unsafe_allow_html=True
-    )
-
-    st.markdown("<div style='margin-top:22px;'></div>", unsafe_allow_html=True)
-
-    # ============================================================
-    # 3) FORECAST — ราคาจะไปทางไหนในอนาคต
-    # ============================================================
-
-    forecast_title, forecast_info = st.columns([0.96, 0.06], gap="small")
-
-    with forecast_title:
-        st.markdown(
-            """
-            <div style="
-                background-color:#FFFFFF;
-                border:1px solid #D9E2EC;
-                border-right:none;
-                border-radius:12px 0 0 0;
-                padding:14px 18px 10px 18px;
-                height:48px;
-                box-sizing:border-box;
-            ">
-                <span style="
-                    font-size:13px;
-                    font-weight:bold;
-                    color:#64748B;
-                    letter-spacing:0.5px;
-                ">
-                    📈 FORECAST — PRICE HISTORY + MODEL-IMPLIED RANGE
-                </span>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-
-    with forecast_info:
-        with st.popover("ⓘ", use_container_width=True):
-            st.markdown(
-                """
-                **คำอธิบายกราฟ**
-
-                - เส้นทึบฟ้า = ราคาจริงที่เกิดขึ้นแล้ว
-                - เส้นประสี = ค่ากลางที่โมเดลคาดการณ์
-                - แถบทึบแสง = ช่วงคาดการณ์ประมาณ 80%
-                - คำนวณจาก Volatility จริง
-                - ไม่ใช่การรับประกันผลตอบแทน
-                """
-            )
-
-    hist_tail = ctx.stock_daily.tail(150)
-
-    vol_annual = safe(ctx.stock_info.get('volatility'), 25.0) / 100
-    daily_vol = vol_annual / np.sqrt(252)
-    horizon_days = 10
-
-    future_dates = pd.bdate_range(
-        start=hist_tail['date'].iloc[-1],
-        periods=horizon_days + 1
-    )[1:]
-
-    drift = (prob_up - 50) / 50 * daily_vol * horizon_days
-    t_arr = np.arange(1, horizon_days + 1)
-
-    median_path = ctx.current_price * (1 + drift * (t_arr / horizon_days))
-    band = ctx.current_price * daily_vol * np.sqrt(t_arr) * 1.28
-
-    upper_path = median_path + band
-    lower_path = median_path - band
-
-    fig_forecast = go.Figure()
-
-    fig_forecast.add_trace(
-        go.Scatter(
-            x=future_dates, y=lower_path, mode='lines',
-            line=dict(width=0), showlegend=False, hoverinfo='skip'
-        )
-    )
-    fig_forecast.add_trace(
-        go.Scatter(
-            x=future_dates, y=upper_path, mode='lines',
-            line=dict(width=0), fill='tonexty',
-            fillcolor=_hex_to_rgba(status_color, 0.18),
-            name='Prediction Range', hoverinfo='skip'
-        )
-    )
-    fig_forecast.add_trace(
-        go.Scatter(
-            x=future_dates, y=median_path, mode='lines',
-            line=dict(color=status_color, width=2.2, dash='dash'),
-            name='Model Forecast (Median)'
-        )
-    )
-    fig_forecast.add_trace(
-        go.Scatter(
-            x=hist_tail['date'], y=hist_tail['close'], mode='lines',
-            line=dict(color=BLUE, width=2.2), name='Actual Price'
-        )
-    )
-
-    fig_forecast.update_layout(
-        height=350,
-        margin=dict(l=45, r=25, t=10, b=30),
-        paper_bgcolor="#FFFFFF",
-        plot_bgcolor="#FFFFFF",
-        xaxis=dict(gridcolor="#D9E2EC", tickfont=dict(size=11, color=MUTED), zeroline=False),
-        yaxis=dict(
-            title=dict(text="Price (THB)", font=dict(size=11.5, color=MUTED)),
-            gridcolor="#D9E2EC", tickfont=dict(size=11, color=MUTED), zeroline=False
-        ),
-        legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0, font=dict(size=11, color="#334155"))
-    )
-
-    show_chart(fig_forecast, key="ai_forecast", expand_height=700)
-
-    st.markdown(
-        f"""<div style="font-size:11px; color:{MUTED}; padding:8px 16px 12px 16px; background:#FFFFFF; border:1px solid #D9E2EC; border-top:none; border-radius:0 0 12px 12px;">
-* เส้นทึบฟ้า = ราคาจริงที่เกิดขึ้นแล้ว | เส้นประสี = ค่ากลางที่โมเดลคาดการณ์ | แถบทึบแสง = ช่วงคาดการณ์ (~80%) จาก Volatility จริง ({safe(ctx.stock_info.get('volatility')):.1f}%) — ไม่ใช่การรับประกันผลตอบแทน</div>""",
-        unsafe_allow_html=True
-    )
-
-    st.markdown("<div style='margin-top:22px;'></div>", unsafe_allow_html=True)
-
-    # ============================================================
-    # 4) MODEL EXPLANATION — โมเดลตัดสินใจจากอะไร
-    # ============================================================
-
-    st.markdown(_section_title("MODEL EXPLANATION"), unsafe_allow_html=True)
-
-    exp_c1, exp_c2 = st.columns([1.4, 1])
-
-    fi = ctx.feat_imp_df[ctx.feat_imp_df['ticker'] == ctx.selected_ticker].sort_values('importance')
-
-    with exp_c1:
-        if not fi.empty:
-            fig_shap = go.Figure(
-                go.Bar(
-                    x=fi['importance'], y=fi['feature'], orientation='h',
-                    marker=dict(color=BLUE),
-                    text=[f"{v:.3f}" for v in fi['importance']],
-                    textposition='outside',
-                    textfont=dict(size=11, color='#334155')
-                )
-            )
-            fig_shap.update_layout(
-                height=240,
-                margin=dict(l=10, r=50, t=10, b=10),
-                paper_bgcolor="#FFFFFF",
-                plot_bgcolor="#FFFFFF",
-                xaxis=dict(gridcolor="#D9E2EC", tickfont=dict(size=10, color=MUTED), zeroline=False),
-                yaxis=dict(tickfont=dict(size=10.5, color="#334155"), gridcolor="#D9E2EC", zeroline=False),
-                showlegend=False
-            )
-            show_chart(fig_shap, key="ai_feature_importance", expand_height=650)
-        else:
-            st.info("ไม่มีข้อมูล Feature Importance")
-
-    with exp_c2:
-        top_feat = fi.sort_values('importance', ascending=False).iloc[0]['feature'] if not fi.empty else "N/A"
-        st.markdown(
-            f"""<div style="background-color:#FFFFFF; border:1px solid #D9E2EC; border-radius:12px; padding:18px; min-height:240px; display:flex; flex-direction:column; justify-content:center;">
-<div style="font-size:13px; font-weight:bold; color:{MUTED}; letter-spacing:0.5px; margin-bottom:10px;">
-EXPLAINABLE AI SUMMARY
-</div>
-<p style="font-size:13.5px; color:#334155; line-height:1.6; margin:0;">
-โมเดลใช้ {len(fi)} ตัวชี้วัดเชิงเทคนิคในการทำนาย โดย feature ที่มีอิทธิพลต่อผลทำนายของ
-<b>{ctx.selected_ticker}</b> สูงสุดคือ
-<b style="color:{BLUE};">{top_feat}</b>
-— ค่านี้มาจากน้ำหนักจริงที่ Random Forest เรียนรู้ได้ ไม่ใช่ค่าคงที่
-</p>
-</div>""",
-            unsafe_allow_html=True
-        )
-
-    render_nav_footer("m4", prev_page=" Entry Timing", next_page=" Risk Analysis")
+    return ({
+        'ai_score': ai_score,
+        'prob_up': None if prob_up is None else round(prob_up, 1),
+        'accuracy': round(float(acc), 1),
+        'baseline_accuracy': round(baseline_acc, 1),
+        'precision': round(float(prec), 1),
+        'recall': round(float(rec), 1),
+        'f1_score': round(float(f1), 1),
+        'roc_auc': None if auc is None else round(float(auc), 3),
+        'ai_signal': sig,
+        'is_fallback': False,
+        'model_has_edge': has_edge,
+        'n_train': int(len(train_data)),
+        'n_test': int(len(test_data)),
+        'n_purged': int(n_purged),
+        'ai_status': 'OK' if has_edge else 'โมเดลยังไม่ชนะการเดาแบบง่าย (baseline) บนข้อมูลปี 2025',
+    }, feature_importance, backtest_df)

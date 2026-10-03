@@ -1,924 +1,712 @@
+# ไฟล์ calculate_modules/entry_timing.py
 """
-pages_content/entry_timing.py
+calculate_modules/entry_timing.py
 --------------------------------------------------------------------
-Institutional Grade UI - Bloomberg / TradingView Inspired
-
-IKB v3.2 (Audit Response Build) — merged with main's readability polish
-
-ยึดตรรกะ/การแก้บั๊กทั้งหมดจาก v3.2 (Audit Response Build) เป็นหลัก เพราะ
-main ที่ branch นี้ conflict ด้วยยังเป็น v3.1 (เก่ากว่า) การเปลี่ยนแปลงคือ
-การรองรับสถานะใหม่จาก backend v2.0 เท่านั้น
-
-Changelog vs v3.1:
-- ISSUE 01: เพิ่มเส้นทางเรนเดอร์ "ข้อมูลไม่เพียงพอ" (`_render_insufficient`)
-  เมื่อ backend ส่ง data_status = 'INSUFFICIENT_DATA' หรือ timing_score = None
-  ฟังก์ชัน render() จะ return ออกตั้งแต่ต้น องค์ประกอบที่ต้องการตัวเลข
-  (เกจครึ่งวงกลม, แถบ %, f-string) จึงไม่ถูกเรียกเลย ไม่เกิด TypeError
-  ใช้สีเทา #64748B ที่ไม่ซ้ำกับสถานะใดในระบบ และไม่ใช้ค่า default 50.0 อีก
-- ISSUE 02: `pillar_pts_label()` หารด้วยจำนวนเกณฑ์ "คงที่"
-  (trend_criteria_count / mom_criteria_count จาก backend) ไม่ใช่จำนวนที่มีข้อมูล
-  เกณฑ์ที่ไม่มีข้อมูลแสดง badge = N/A แต่แต้มแสดง 0.0 pts ให้ตรงกับคะแนนจริง
-- ISSUE 03: แถว Risk/Reward และการ์ด RISK / REWARD แยกแสดง 2 กรณี
-  rr_status = 'NOT_COMPUTABLE' -> N/A พร้อมเหตุผล
-  rr_status = 'COMPUTED'       -> แสดงอัตราส่วนจริงแม้จะต่ำ เช่น 0.19 : 1
-  Risk/Reward จึงไม่ถูกนับรวมใน SIGNAL CHECKLIST (ที่เป็นสัญญาณ ผ่าน/ไม่ผ่าน
-  ล้วนๆ) แต่แยกไปแสดงเป็นการ์ดของตัวเอง เพื่อไม่ให้สถานะ "คำนวณไม่ได้"
-  ถูกตีความปนไปกับ "สัญญาณลบ"
-- ถอดข้อความ narrative ที่ hardcode ในการ์ด RISK / REWARD
-  ("Potential upside is significantly higher...") มาสร้างจากค่าที่คำนวณจริง
-- แก้ระดับการย่อหน้าของบล็อก `with right:` ให้เป็นคอลัมน์พี่น้องของ
-  `with center:` ตามที่ตั้งใจไว้ (ผลลัพธ์บนหน้าจอเหมือนเดิมทุกประการ)
-
-=== MERGE NOTE (รวม Branch ทีมเจ้าของโมดูล/entry_timing x main) ===
-- Logic/การแก้บั๊กทั้งหมด (ISSUE 01-03 ด้านบน) ยึดจากทีมเจ้าของโมดูล (v3.2)
-  เพราะ main (v3.1) ยังมีบั๊กที่ v3.2 แก้ไปแล้ว เช่น การหารคะแนนด้วยจำนวน
-  เกณฑ์ที่มีข้อมูล (ทำให้หุ้นข้อมูลแหว่งได้เปรียบ), การคำนวณแนวรับ-แนวต้าน
-  ก่อนเช็คว่าราคาปัจจุบันมีค่าหรือไม่ (เสี่ยง TypeError เมื่อข้อมูลไม่พอ),
-  และข้อความ Risk/Reward ที่ hardcode ไว้ตายตัว
-- เพิ่ม page title header ("ENTRY TIMING" + คำอธิบาย) ที่ main เพิ่มมา
-  เพื่อให้หน้าตาสอดคล้องกับหน้าอื่นๆ ในแดชบอร์ด (Company Health, Risk
-  Analysis, AI Prediction, Industry Benchmark ก็มี header แบบนี้เหมือนกัน)
-- ปรับขนาดฟอนต์ในการ์ด PRICE SETUP, RISK/REWARD, SYSTEM SCORING
-  METHODOLOGY และ CONFIDENCE ให้ใหญ่ขึ้นตามที่ main ปรับไว้ (อ่านง่ายขึ้น
-  และสอดคล้องกับฟอนต์ส่วนอื่นของหน้าที่ใช้ ~13-14px อยู่แล้ว) โดยเนื้อหา/
-  ตัวเลขยังคง null-safe ตามตรรกะของ v3.2 ทั้งหมด
-- เพิ่ม Risk/Reward กลับเข้ามาเป็นการ์ดที่ 4 ใน "WHY WAIT? / WHY NOW?"
-  (main มี 4 การ์ด, v3.2 มี 3) แต่ทำให้ null-safe รองรับสถานะ NOT_COMPUTABLE
-  ด้วยไอคอน/สีเทาเหมือนรายการอื่นในกลุ่มเดียวกัน แทนที่จะ crash หรือแสดง
-  ค่าเท็จเมื่อคำนวณไม่ได้
-- ปุ่มเปลี่ยนหน้าด้านล่างใช้ label แบบไม่มี emoji ให้ตรงกับหน้าอื่นทั้งหมด
-
-=== PATCH NOTE (theme + typography) ===
-- NEUTRAL: เปลี่ยนสีธีมจากสีฟ้า (ACCENT เดิมที่ backend ส่งมาใน sig["status_color"])
-  เป็นสีเหลือง (AMBER) เพื่อไม่ให้ปนกับสีฟ้าที่ใช้เป็น accent สี highlight ทั่วทั้งหน้า
-  ทำเป็น UI-only override หลังอ่านค่าจาก classify_signal() แล้ว (ไม่แตะ label /
-  readiness / action ที่ยังต้องยึดจาก backend เป็น single source of truth ตามเดิม)
-- ปรับขนาดฟอนต์จุดที่เล็กกว่ามาตรฐานของหน้าอื่น (10-11.5px) ให้อยู่ในช่วง
-  12-13px ให้สอดคล้องกับสเกลฟอนต์ของหน้า Company Health (บรรทัดข้อมูล header
-  bar, ป้ายชื่อ missing_fields, กล่องเหตุผลในหน้า "ข้อมูลไม่เพียงพอ", และ
-  หมายเหตุใน SYSTEM SCORING METHODOLOGY)
-
-=== PATCH NOTE (คำอธิบาย WHY NOW?/WHY WAIT? อ่านเข้าใจง่ายขึ้นทุกสถานะ) ===
-- คำอธิบายย่อยของการ์ด Trend / Momentum / Volume / Risk-Reward ใน
-  "WHY NOW? / WHY WAIT?" เดิมสั้นและกำกวมในบางสถานะ (โดยเฉพาะตอนกาผิด ✕
-  หรือไม่มีข้อมูล --) แก้เป็นประโยคเต็มที่บอกทั้ง "สิ่งที่ระบบเห็น" และ
-  "ทำไมถึงถูก/ผิด" ให้คนทั่วไปอ่านแล้วเข้าใจได้ทันที ครบทั้ง 3 สถานะ
-  (ผ่าน ✓ / ไม่ผ่าน ✕ / ไม่มีข้อมูล --) ของทั้ง 4 หัวข้อ ไม่กระทบ logic การ
-  ตัดสิน ok/available หรือค่าตัวเลขใดๆ เปลี่ยนแค่ข้อความที่แสดงผล
+Institutional Quantitative Framework (IKB v2.3) - Production Database Compatible Build
+Patch v2.3.1 (2026-10-03) — แก้ให้ key ตรงกับที่หน้าจอ pages_content/entry_timing.py อ่าน (ตรรกะคำนวณไม่เปลี่ยน):
+- เพิ่ม key "rr_status_reason" (ค่าเดียวกับ rr_reason) — หน้าจออ่านชื่อนี้ เดิมไม่มี ทำให้เหตุผล "งดเข้าเทรด" ไม่เคยขึ้น
+- missing_fields ส่งเป็น JSON list เช่น '["MA200"]' — หน้าจอใช้ json.loads() เดิมส่ง "MA200, ADX" ทำให้รายการไม่ขึ้น
+Changelog vs v2.2:
+- TRADER MODE RR: ปรับลอจิก compute_price_levels() / compute_risk_reward() ใหม่
+  * Stop Loss (SL) = 30-Day Low (คีย์ "support_2" เดิม)
+  * Risk = ราคาปัจจุบัน - SL
+  * Target 1 (RR 1:2) = ราคาปัจจุบัน + Risk*2 (คีย์ "resistance_60d" เดิม)
+  * Target 2 (RR 1:3) = ราคาปัจจุบัน + Risk*3 (คีย์ "resistance_2" เดิม)
+  * New Low Guardrails: Risk <= 0 หรือ Risk < 1% ของราคา -> งดเข้าเทรดทันที
+    (rr_status = NOT_COMPUTABLE, rr_score = 0, พร้อมข้อความเตือน)
+  คีย์ผลลัพธ์ทั้งหมด (rr_ratio, risk_floor, reward_target, resistance_60d,
+  resistance_2, support_2 ฯลฯ) คงชื่อเดิมทุกประการ ไม่กระทบ schema ฐานข้อมูล
+Changelog vs v2.1:
+- FIX: ปรับรูปแบบคืนค่าทั้งหมดเป็น Primitive/Scalar types (int, float, str)
+  เพื่อรองรับ SQLite schema ใน calculate_scores.py โดยไม่ต้องแก้ไขโค้ดฐานข้อมูลกลาง
+- MAINTAIN: ตรรกะ Issue 01-05 และ Trend Veto ยังคงทำงานครบถ้วนตามเดิม
 """
-import html
+
+from __future__ import annotations
+
 import json
-import re
-import textwrap
+import math
+import os
+from dataclasses import dataclass, replace, asdict
+from typing import Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-import streamlit as st
 
-from common import safe, render_nav_footer
-from calculate_modules.entry_timing import classify_signal
-
-
-# --------------------------------------------------------------------
-# Design tokens - LIGHT THEME
-# --------------------------------------------------------------------
-BG_PAGE = "#F8FAFC"
-BG_CARD = "#FFFFFF"
-BG_CARD_2 = "#F8FAFC"
-BG_CHIP = "#F1F5F9"
-
-BORDER = "#E2E8F0"
-BORDER_SOFT = "#E2E8F0"
-
-TEXT_MUTED = "#64748B"
-TEXT = "#334155"
-TEXT_WHITE = "#0F172A"
-
-ACCENT = "#38BDF8"
-GREEN = "#10B981"
-RED = "#EF4444"
-AMBER = "#F59E0B"
-GRAY = "#64748B"          # ISSUE 01: สีเฉพาะของสถานะ "ยังไม่ได้ประเมิน"
-
-
-def _badge(ok, available):
-    if not available:
-        return "N/A", TEXT_MUTED, "100,116,139"
-    if ok:
-        return "PASS", GREEN, "16,185,129"
-    return "FAIL", RED, "239,68,68"
-
-
-def _card_style(extra=""):
-    return (
-        f"background:{BG_CARD};"
-        f"border:1px solid {BORDER};"
-        "border-radius:10px;"
-        "padding:16px;"
-        f"{extra}"
-    )
-
-
-def _render_html(markup):
-    clean = textwrap.dedent(markup)
-    clean = re.sub(r"\s*\n\s*", " ", clean).strip()
-    st.markdown(clean, unsafe_allow_html=True)
-
-
-def _metric_card(label, value, sub="", value_color=TEXT_WHITE, is_summary=False, card_bg=BG_CARD):
-    content_style = (
-        f"font-size:15px;font-weight:700;color:{value_color};margin-top:4px;"
-        "overflow:hidden;text-overflow:ellipsis;display:-webkit-box;"
-        "-webkit-line-clamp:2;-webkit-box-orient:vertical;line-height:1.35;"
-        if is_summary
-        else
-        f"font-size:19px;font-weight:900;color:{value_color};margin-top:4px;"
-        "white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"
-    )
-
-    return f"""
-    <div style="{_card_style(
-        f'height:100%;box-sizing:border-box;background:{card_bg};'
-    )}">
-        <div style="font-size:14px;font-weight:800;color:{'#FFFFFF' if card_bg != BG_CARD else TEXT_MUTED};letter-spacing:.5px;">
-            {label}
-        </div>
-        <div style="{content_style}">
-            {value}
-        </div>
-        <div style="font-size:14px;color:{'#FFFFFF' if card_bg != BG_CARD else TEXT_MUTED};margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
-            {sub}
-        </div>
-    </div>
-    """
-
-
-def _num(value):
-    """ISSUE 01: None ต้องคงเป็น None ห้ามถูกกลบเป็น 0.0 / 50.0 โดยอัตโนมัติ"""
-    if value is None:
-        return None
-    try:
-        out = float(value)
-    except (TypeError, ValueError):
-        return None
-    return None if (np.isnan(out) or np.isinf(out)) else out
-
-
-def _f(value, spec=".2f", dash="N/A"):
-    """ISSUE 01 (hardening): format ตัวเลขโดยไม่ระเบิดเมื่อค่าเป็น None
-    ต่างจาก safe(value, default) ของ v3.1 ตรงที่ไม่เคยแทน None ด้วยตัวเลข
-    แต่คืนข้อความ "N/A" แทน จึงไม่มีทางเกิด
-    TypeError: unsupported format string passed to NoneType.__format__
-    ไม่ว่าคีย์ใดจาก backend จะหล่นหายระหว่างทางก็ตาม
-    """
-    if value is None:
-        return dash
-    try:
-        return format(float(value), spec)
-    except (TypeError, ValueError):
-        return dash
-
-
-def _missing_list(raw):
-    """backend ส่ง missing_fields มาเป็น JSON string (SQLite compatibility)"""
-    if isinstance(raw, (list, tuple)):
-        return list(raw)
-    try:
-        parsed = json.loads(raw) if raw else []
-        return parsed if isinstance(parsed, list) else []
-    except (TypeError, ValueError):
-        return []
-
-
-
-def _render_insufficient(sig, reason, missing_fields):
-    """ISSUE 01: หน้าจอสถานะ "ยังไม่ได้ประเมิน"
-    ใช้โครงการ์ดเดียวกับหน้าปกติ (grid 4 ช่อง + การ์ดใหญ่) เพื่อให้หน้าตาต่อเนื่อง
-    แต่ไม่มีการเรนเดอร์เกจ คะแนน หรือแถบเปอร์เซ็นต์ใด ๆ ทั้งสิ้น
-    """
-    missing_html = (
-        "".join(
-            f'<span style="background:{BG_CHIP};color:{TEXT_MUTED};font-size:12px;font-weight:700;'
-            f'padding:3px 8px;border-radius:4px;margin:0 4px 4px 0;display:inline-block;">{html.escape(str(m))}</span>'
-            for m in missing_fields
-        )
-        or f'<span style="font-size:12.5px;color:{TEXT_MUTED};">ไม่ระบุรายการ</span>'
-    )
-    _render_html(
-        f"""
-        <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1.6fr;gap:10px;margin-bottom:12px;">
-            {_metric_card("MARKET TREND", sig["status_label"], sig["action_th"], GRAY)}
-            {_metric_card("ENTRY READINESS", "NO DATA", "ยังไม่ได้ประเมิน", GRAY)}
-            {_metric_card("CONFIDENCE", "-- / --", "ไม่มีคะแนนความเชื่อมั่น", GRAY)}
-            {_metric_card("ℹ️ สรุปสั้น ๆ", html.escape(str(reason)), "สถานะคุณภาพข้อมูลของหลักทรัพย์นี้", TEXT, is_summary=True)}
-        </div>
-        """
-    )
-    _render_html(
-        f"""
-        <div style="{_card_style('border-left:4px solid ' + GRAY + ';')}">
-            <div style="font-size:13px;font-weight:900;color:{GRAY};border-bottom:2px solid {BORDER_SOFT};
-                        padding-bottom:6px;margin-bottom:10px;">
-                ⚠️ ข้อมูลไม่เพียงพอ — ระบบยังไม่ได้ประเมินหลักทรัพย์นี้
-            </div>
-            <div style="font-size:13px;color:{TEXT};line-height:1.6;">
-                {html.escape(str(reason))}
-            </div>
-            <div style="margin-top:10px;font-size:12px;font-weight:800;color:{TEXT_MUTED};letter-spacing:.5px;">
-                ตัวชี้วัดที่ขาด
-            </div>
-            <div style="margin-top:6px;">{missing_html}</div>
-            <div style="margin-top:12px;background:rgba(100,116,139,.10);border-left:3px solid {GRAY};
-                        padding:8px 12px;border-radius:0 6px 6px 0;font-size:12.5px;color:{TEXT};">
-                <b>หมายเหตุ:</b> ระบบจงใจไม่แสดงคะแนนใด ๆ ในสถานะนี้ —
-                <b>ไม่มีข้อมูล ไม่เท่ากับ ปานกลาง</b>
-                การแสดงคะแนน 50 / NEUTRAL ให้หลักทรัพย์ที่ข้อมูลแหว่ง
-                คือการให้สารสนเทศที่ทำให้เข้าใจผิด
-            </div>
-        </div>
-        """
-    )
-
-
-def render(ctx):
-    info = ctx.stock_info
-    c_p = _num(ctx.current_price)
-    ticker_safe = html.escape(str(ctx.selected_ticker))
-
-    st.markdown("""
-    <div style="margin-bottom:20px;">
-        <div style="font-size:25px; font-weight:700; color:#0F172A; letter-spacing:0.3px;">
-            ENTRY TIMING
-        </div>
-        <div style="font-size:16px; color:#64748B; margin-top:4px;">
-            วิเคราะห์จังหวะการเข้าลงทุนจากแนวโน้ม โมเมนตัม และ Risk/Reward
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    sector_label = str(safe(info.get("sector_label"), ""))
-    data_as_of = str(safe(info.get("data_as_of"), "-"))
-    price_chg_pct = _num(info.get("price_change_pct"))
-    pe_ratio = safe(info.get("pe_ratio"), None)
-    roe_pct = safe(info.get("roe_pct"), None)
-    total_score = _num(info.get("timing_score"))
-    data_status = str(info.get("data_status", "OK"))
-
-    # Single source of truth: classify_signal() lives in the backend module.
-    # Do not re-derive status_label/status_color/action_th/readiness here —
-    # that duplication is what caused the UI and backend to drift apart before.
-    sig = classify_signal(total_score)
-
-    # ---- ISSUE 01: ข้อมูลไม่พอ -> ออกจาก render() ตั้งแต่ต้น ----
-    if total_score is None or data_status == "INSUFFICIENT_DATA":
-        reason = str(info.get("data_status_reason") or info.get("summary_text") or sig["summary_text"])
-        _render_insufficient(sig, reason, _missing_list(info.get("missing_fields")))
-        render_nav_footer("m3", prev_page=" Fair Value", next_page=" AI Prediction")
-        return
-
-    status_label = sig["status_label"]
-    status_color = sig["status_color"]
-    action_th = sig["action_th"]
-    readiness = sig["readiness"]
-
-    # PATCH (theme): NEUTRAL ใช้สีเหลือง (AMBER) แทนสีฟ้าเดิมที่ backend ส่งมา
-    # เป็น UI-only override — label / readiness / action ยังคงยึดจาก
-    # classify_signal() เหมือนเดิมตาม single-source-of-truth ด้านบน
-    # เปลี่ยนเฉพาะสีที่ใช้ "แสดงผล" บนหน้านี้เท่านั้น
-    if status_label == "NEUTRAL":
-        status_color = AMBER
-
-    adx_val = _num(info.get("adx")) or 0.0
-    r1 = _num(info.get("resistance_60d")) or c_p * 1.05
-    r2 = _num(info.get("resistance_2")) or r1 * 1.05
-    s1 = _num(info.get("support_60d")) or c_p * 0.95
-    s2 = _num(info.get("support_2")) or s1 * 0.95
-    pp = _num(info.get("pivot_point")) or round((r1 + s1 + c_p) / 3, 2)
-
-    k15_ok = bool(info.get("k15_ok", False))
-    k16_ok = bool(info.get("k16_ok", False))
-    k17_ok = bool(info.get("k17_ok", False))
-    k18_ok = bool(info.get("k18_ok", False))
-    k19_ok = bool(info.get("k19_ok", False))
-    k20_ok = bool(info.get("k20_ok", False))
-    k_rr_ok = bool(info.get("k_rr_ok", False))
-    k15_av = bool(info.get("k15_available", False))
-    k16_av = bool(info.get("k16_available", False))
-    k17_av = bool(info.get("k17_available", False))
-    k18_av = bool(info.get("k18_available", False))
-    k19_av = bool(info.get("k19_available", False))
-    k20_av = bool(info.get("k20_available", False))
-    k_rr_av = bool(info.get("k_rr_available", False))
-
-    # ISSUE 02: ตัวหารต้องเป็นจำนวนเกณฑ์ "ทั้งหมด" ของเสานั้น (คงที่ 3/3)
-    # ไม่ใช่จำนวนเกณฑ์ที่มีข้อมูล มิฉะนั้นหุ้นข้อมูลแหว่งจะได้แต้มต่อหัวสูงกว่า
-    trend_criteria_count = int(safe(info.get("trend_criteria_count"), 3)) or 3
-    mom_criteria_count = int(safe(info.get("mom_criteria_count"), 3)) or 3
-    # น้ำหนักแต่ละเสาอ่านจาก backend (calculate_modules/entry_timing.py) ให้แต้มบนหน้าจอตรงกับคะแนนจริง
-    # (เดิม hardcode 40/30/30 แต่ backend คิด 60/40/0 ทำให้แต้มต่อเกณฑ์บนหน้าจอไม่ตรงกับคะแนนรวม)
-    trend_weight = float(safe(info.get("trend_weight"), 60.0))
-    mom_weight = float(safe(info.get("mom_weight"), 40.0))
-    rr_weight = float(safe(info.get("rr_weight"), 0.0))
-
-    rr_ratio = _num(info.get("rr_ratio"))
-    rr_score = _num(info.get("rr_score")) or 0.0
-    rr_status = str(info.get("rr_status", "COMPUTED"))
-    rr_status_reason = str(info.get("rr_status_reason", ""))
-
-    # ISSUE 03 (hardening): ห้ามเชื่อธงสถานะเพียงอย่างเดียว เพราะถ้าคีย์ rr_status
-    # หล่นหายระหว่างทาง (backend เวอร์ชันเก่า หรือ schema ของ cis_database.db
-    # ไม่มีคอลัมน์นี้) ค่า default "COMPUTED" จะพาโค้ดไป format rr_ratio ที่เป็น
-    # None แล้วเกิด TypeError ทั้งหน้าจอ — ให้ "ค่าที่จะแสดง" เป็นคนตัดสินแทน
-    rr_computable = (rr_status != "NOT_COMPUTABLE") and (rr_ratio is not None)
-    if not rr_computable and not rr_status_reason:
-        rr_status_reason = (
-            "ไม่พบค่าอัตราส่วนจาก backend (ตรวจสอบว่าใช้ entry_timing.py v2.0 "
-            "และตาราง cis_database.db มีคอลัมน์ rr_status / rr_status_reason)"
-            if rr_status != "NOT_COMPUTABLE"
-            else "ไม่สามารถนิยามอัตราส่วนผลตอบแทนต่อความเสี่ยงได้"
-        )
-
-    downside_pct = _num(info.get("downside_pct"))
-    upside_pct = _num(info.get("upside_pct"))
-
-    # TRADER MODE (v2.3): Stop Loss = 30-Day Low, Target 1/2 = Risk x 2 / x 3.
-    # เมื่อ New Low Guardrails สั่งงดเข้าเทรด (rr_computable == False) ต้องไม่โชว์
-    # ตัวเลข SL/Target ที่คำนวณมาแบบไม่มีความหมาย (เช่น Risk <= 0) จึงสลับเป็น
-    # N/A พร้อมข้อความเตือนแทน
-    if rr_computable:
-        sl_display = f"&lt; {_f(s2)}"
-        target1_display = _f(r1)
-        target2_display = _f(r2)
-        watch_zone_display = f"{_f(pp)} -- {_f(r1)}"
-        setup_warning_html = ""
-    else:
-        sl_display = "N/A"
-        target1_display = "N/A"
-        target2_display = "N/A"
-        watch_zone_display = f"{_f(pp)} -- N/A"
-        setup_warning_html = f"""
-        <div style="margin-top:8px;background:rgba(239,68,68,.08);border-left:3px solid {RED};
-                    padding:6px 10px;border-radius:0 6px 6px 0;font-size:12px;color:{TEXT_MUTED};">
-            <b style="color:{RED};">⚠ งดเข้าเทรด (New Low Guardrail):</b> {rr_status_reason}
-        </div>
-        """
-
-    vol_series = next(
-        (
-            ctx.stock_daily[v]
-            for v in ["volume", "Volume", "vol", "Vol"]
-            if v in ctx.stock_daily.columns
-        ),
-        None,
-    )
-
-    def pillar_pts_label(ok, available, n_criteria, pillar_max):
-        # ตัวชี้วัดที่ไม่มีข้อมูลได้ 0 คะแนนจริง ๆ (ISSUE 02) จึงแสดง 0.0 pts
-        # ส่วนการบอกว่า "ไม่มีข้อมูล" เป็นหน้าที่ของ badge N/A ไม่ใช่ช่องแต้ม
-        if not available or not ok:
-            return "0.0 pts"
-        share = pillar_max / n_criteria if n_criteria > 0 else 0.0
-        return f"+{share:.1f} pts"
-
-    # ISSUE 03: ข้อความของแถว Risk/Reward แยก 2 กรณีชัดเจน (ไม่นับรวมใน
-    # SIGNAL CHECKLIST ด้านล่าง เพราะ "คำนวณไม่ได้" ไม่ควรถูกตีความเป็น "ไม่ผ่าน")
-    if not rr_computable:
-        rr_sub_text = f"คำนวณไม่ได้ — {rr_status_reason}"
-    elif k_rr_ok:
-        rr_sub_text = f"RR {_f(rr_ratio)} : 1 ผ่านเกณฑ์ขั้นต่ำ"
-    else:
-        rr_sub_text = f"RR {_f(rr_ratio)} : 1 ต่ำกว่าเกณฑ์ขั้นต่ำ"
-
-    # 6 items: 3 Trend + 3 Momentum ตาม pillar weighting ที่ backend ส่งมา (trend_weight / mom_weight)
-    # (Risk/Reward แยกออกไปแสดงเป็นการ์ดของตัวเองด้านล่าง ดูเหตุผลใน ISSUE 03)
-    checklist = [
-        (k15_ok, k15_av, "Short-Term Trend",
-         "ราคายืนเหนือเส้น EMA20" if k15_ok else ("ราคาต่ำกว่าเส้น EMA20" if k15_av else "ไม่มีข้อมูล EMA20"),
-         pillar_pts_label(k15_ok, k15_av, trend_criteria_count, trend_weight)),
-        (k16_ok, k16_av, "Medium-Term Trend",
-         "EMA20 อยู่เหนือ EMA50" if k16_ok else ("EMA20 ยังไม่ตัดขึ้นเหนือ EMA50" if k16_av else "ไม่มีข้อมูล EMA50"),
-         pillar_pts_label(k16_ok, k16_av, trend_criteria_count, trend_weight)),
-        (k17_ok, k17_av, "Long-Term Trend",
-         "ราคายืนเหนือเส้น MA200" if k17_ok else ("ราคายังอยู่ต่ำกว่า MA200" if k17_av else "ข้อมูลไม่ถึง 200 แท่ง"),
-         pillar_pts_label(k17_ok, k17_av, trend_criteria_count, trend_weight)),
-        (k18_ok, k18_av, "Momentum (MACD)",
-         "MACD อยู่ในโซนบวก" if k18_ok else ("MACD อยู่ในโซนลบ" if k18_av else "ไม่มีข้อมูล MACD"),
-         pillar_pts_label(k18_ok, k18_av, mom_criteria_count, mom_weight)),
-        (k19_ok, k19_av, "Trend Strength (ADX)",
-         (f"ADX {_f(adx_val, '.1f')} (มีแรงเหวี่ยงดี)" if k19_ok else f"ADX {_f(adx_val, '.1f')} (ต่ำกว่าเกณฑ์)") if k19_av else "ไม่มีข้อมูล ADX",
-         pillar_pts_label(k19_ok, k19_av, mom_criteria_count, mom_weight)),
-        (k20_ok, k20_av, "Volume Confirmation",
-         ("วอลุ่มล่าสุดสูงกว่าค่าเฉลี่ย 20 วันก่อนหน้า" if k20_ok else "วอลุ่มเบาบางกว่าค่าเฉลี่ย 20 วันก่อนหน้า") if k20_av else "ไม่มีข้อมูลวอลุ่มเพียงพอ",
-         pillar_pts_label(k20_ok, k20_av, mom_criteria_count, mom_weight)),
-    ]
-
-    bullish_count = sum(1 for ok, av, *_ in checklist if ok and av)
-    total_checks = len(checklist)
-    failed_items = [name for ok, av, name, _, _ in checklist if not ok and av]
-    na_items = [name for ok, av, name, _, _ in checklist if not av]
-
-    if bullish_count >= total_checks - 1:
-        summary_text = f"สัญญาณพร้อมสูง ({bullish_count}/{total_checks}) โครงสร้างราคาและโมเมนตัมสนับสนุนการเข้าสะสม"
-    elif len(failed_items) + len(na_items) <= 2:
-        missing_str = ", ".join(failed_items + [f"{n} (ไม่มีข้อมูล)" for n in na_items])
-        summary_text = f"ผ่าน {bullish_count}/{total_checks} เกณฑ์ --- <b>รอการยืนยันจาก: {missing_str}</b>"
-    else:
-        summary_text = f"ผ่าน {bullish_count}/{total_checks} เกณฑ์ --- <b>สัญญาณยังไม่ครบถ้วน ควรงดเข้าซื้อ</b>"
-
-    # --- TOP HEADER BAR ---
-    readiness_color = GREEN if readiness == "READY" else AMBER
-
-    confidence_dots = "".join([
-        f'<span style="height:7px;width:7px;'
-        f'background-color:{"#10B981" if i < bullish_count else "#CBD5E1"};'
-        f'border-radius:50%;display:inline-block;margin-right:3px;"></span>'
-        for i in range(total_checks)
-    ])
-
-    kpi_html = f"""
-    <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1.6fr;gap:10px;margin-bottom:12px;">
-        {_metric_card(
-            "ENTRY READINESS",
-            readiness,
-            "รอการยืนยันสัญญาณเพิ่มเติม" if readiness != "READY" else "สัญญาณครบตามเกณฑ์",
-            "#FFFFFF",
-            card_bg=readiness_color
-        )}
-        {_metric_card("MARKET TREND", status_label, action_th, status_color)}
-        <div style="{_card_style()}">
-            <div style="font-size:14px;font-weight:800;color:{TEXT_MUTED};letter-spacing:.5px;">CONFIDENCE</div>
-            <div style="font-size:20px;font-weight:900;color:{TEXT_WHITE};margin-top:4px;">{bullish_count} / {total_checks}</div>
-            <div style="margin-top:4px;">{confidence_dots}</div>
-        </div>
-        {_metric_card(
-            "ⓘ สรุปสั้น ๆ",
-            summary_text,
-            "ภาพรวมสถานะการลงทุนเชิงปริมาณ",
-            TEXT,
-            is_summary=True
-        )}
-    </div>
-    """
-
-    _render_html(kpi_html)
-
-    # ปรับสัดส่วนคอลัมน์ให้สมมาตรและพอดีกับจอภาพแบบ Institutional Grade
-    left, center, right = st.columns([1.0, 2.3, 1.15], gap="medium")
-
-    # ==================================================================
-    # LEFT COLUMN
-    # ==================================================================
-    with left:
-
-        total_arc = 125.66
-        score_fill = round(total_arc * min(1.0, max(0.0, total_score / 100.0)), 2)
-
-        _render_html(
-            f"""
-            <div style="
-                background:{BG_CARD};
-                border:2px solid {status_color};
-                border-radius:10px;
-                padding:16px;
-                margin-bottom:12px;
-                box-sizing:border-box;
-            ">
-
-                <div style="
-                    border-bottom:2px solid {status_color};
-                    padding-bottom:5px;
-                    font-size:16px;
-                    font-weight:800;
-                    color:{TEXT_WHITE};
-                ">
-                    ⏱️ ENTRY TIMING ANALYSIS
-                </div>
-
-                <div style="text-align:center;margin-top:8px;">
-
-                    <svg viewBox="0 0 100 55" style="width:120px;height:66px;display:block;margin:0 auto;">
-
-                        <path d="M 10 48 A 38 38 0 0 1 90 48" fill="none" stroke="{BORDER_SOFT}" stroke-width="7" stroke-linecap="round" />
-
-                        <path d="M 10 48 A 38 38 0 0 1 90 48" fill="none" stroke="{status_color}" stroke-width="7"
-                              stroke-linecap="round" stroke-dasharray="{score_fill} {total_arc}" />
-
-                        <text x="50" y="33" text-anchor="middle" font-size="20" font-weight="900" fill="{TEXT_WHITE}">
-                            {total_score:.0f}
-                        </text>
-
-                        <text x="50" y="43" text-anchor="middle" font-size="8" font-weight="700" fill="{TEXT_MUTED}">
-                            / 100
-                        </text>
-
-                    </svg>
-
-                    <div style="font-size:19px;font-weight:900;color:{status_color};margin-top:2px;">
-                        {status_label}
-                    </div>
-
-                    <div style="font-size:14px;color:{TEXT_MUTED};">
-                        {action_th}
-                    </div>
-
-                </div>
-
-                <div style="border-top:1px solid {BORDER_SOFT};margin-top:8px;padding-top:5px;
-                            display:flex;justify-content:space-between;font-size:13px;font-weight:800;">
-                    <span style="color:{TEXT_WHITE};">CONFLUENCE</span>
-                    <span style="color:{status_color};">{bullish_count} / {total_checks} ผ่าน</span>
-                </div>
-
-            </div>
-            """
-        )
-
-        checklist_items = []
-
-        for ok, av, label, sub, points in checklist:
-
-            badge_label, badge_color, badge_bg = _badge(ok, av)
-            icon = "✓" if ok and av else ("✕" if av else "--")
-
-            checklist_items.append(
-                f"""
-                <div style="display:flex;justify-content:space-between;align-items:center;padding:5px 0;
-                            border-bottom:1px solid {BORDER_SOFT};">
-
-                    <div style="display:flex;align-items:center;gap:6px;min-width:0;">
-
-                        <div style="background:rgba({badge_bg},.15);color:{badge_color};width:16px;height:16px;
-                                    border-radius:50%;display:flex;align-items:center;justify-content:center;
-                                    font-size:15px;font-weight:bold;flex-shrink:0;">
-                            {icon}
-                        </div>
-
-                        <div style="min-width:0;">
-                            <div style="font-size:14px;color:{TEXT_WHITE};font-weight:700;">{label}</div>
-                            <div style="font-size:13px;color:{TEXT_MUTED};">{sub}</div>
-                        </div>
-
-                    </div>
-
-                    <span style="background:rgba({badge_bg},.15);color:{badge_color};font-size:13px;font-weight:800;
-                                 padding:2px 5px;border-radius:4px;white-space:nowrap;margin-left:5px;">
-                        {badge_label}
-                    </span>
-
-                </div>
-                """
-            )
-
-        _render_html(
-            f"""
-            <div style="{_card_style()}">
-
-                <div style="font-size:16px;font-weight:800;color:{TEXT_WHITE};margin-bottom:6px;
-                            border-bottom:2px solid {ACCENT};padding-bottom:4px;display:flex;justify-content:space-between;">
-                    <span>🛡️ SIGNAL CHECKLIST</span>
-                    <span style="color:{status_color};">{bullish_count} / {total_checks} ผ่าน</span>
-                </div>
-
-                {''.join(checklist_items)}
-
-                <div style="margin-top:8px;font-size:16px;font-weight:900;color:{status_color};
-                            display:flex;justify-content:space-between;">
-                    <span>CHECKS PASSED</span>
-                    <span>{bullish_count} / {total_checks}</span>
-                </div>
-
-            </div>
-            """
-        )
-
-    # ==================================================================
-    # CENTER COLUMN
-    # ==================================================================
-    with center:
-
-        c_head1, c_head2 = st.columns([1, 1.5])
-
-        with c_head1:
-            _render_html(
-                f"""
-                <div style="font-size:16px;font-weight:800;color:{TEXT_WHITE};padding-top:4px;">
-                    PRICE ACTION &amp; VOLUME
-                </div>
-                """
-            )
-
-        with c_head2:
-            tf_selected = st.radio(
-                "TF", ["1M", "3M", "6M", "1Y", "2Y", "ALL"],
-                index=2, horizontal=True, label_visibility="collapsed", key="timing_tf_sel",
-            )
-
-        tf_bars = {"1M": 22, "3M": 66, "6M": 132, "1Y": 252, "2Y": 504, "ALL": len(ctx.stock_daily)}
-        n_bars = min(tf_bars.get(tf_selected, 132), len(ctx.stock_daily))
-        chart_df = ctx.stock_daily.tail(n_bars).copy()
-
-        aliases = {"Close": "close", "Open": "open", "High": "high", "Low": "low", "Date": "date"}
-        for source, target in aliases.items():
-            if source in chart_df.columns and target not in chart_df.columns:
-                chart_df[target] = chart_df[source]
-
-        required = {"close", "open", "high", "low", "date"}
-        if not required.issubset(chart_df.columns):
-            st.error("ไม่พบข้อมูล OHLC/Date ที่จำเป็นสำหรับกราฟ")
-        else:
-
-            fig_main = make_subplots(
-                rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.78, 0.22],
-            )
-
-            fig_main.add_trace(
-                go.Candlestick(
-                    x=chart_df["date"], open=chart_df["open"], high=chart_df["high"],
-                    low=chart_df["low"], close=chart_df["close"], name="Price",
-                    increasing_line_color=GREEN, decreasing_line_color=RED, line=dict(width=1),
-                ),
-                row=1, col=1,
-            )
-
-            if "EMA20" in chart_df.columns:
-                fig_main.add_trace(
-                    go.Scatter(x=chart_df["date"], y=chart_df["EMA20"], line=dict(color=AMBER, width=1.2), name="EMA 20"),
-                    row=1, col=1,
-                )
-
-            if "EMA50" in chart_df.columns:
-                fig_main.add_trace(
-                    go.Scatter(x=chart_df["date"], y=chart_df["EMA50"], line=dict(color=ACCENT, width=1.2), name="EMA 50"),
-                    row=1, col=1,
-                )
-
-            if "MA200" in chart_df.columns:
-                fig_main.add_trace(
-                    go.Scatter(x=chart_df["date"], y=chart_df["MA200"], line=dict(color="#A78BFA", width=1.2), name="MA 200"),
-                    row=1, col=1,
-                )
-
-            bar_colors = [GREEN if c >= o else RED for c, o in zip(chart_df["close"], chart_df["open"])]
-            vol_data = vol_series.tail(n_bars) if vol_series is not None else pd.Series(
-                np.zeros(len(chart_df)), index=chart_df.index
-            )
-
-            fig_main.add_trace(
-                go.Bar(x=chart_df["date"], y=vol_data, marker_color=bar_colors, showlegend=False),
-                row=2, col=1,
-            )
-
-            lines_to_plot = [
-                (r2, "dot", "#F87171", 1.0),
-                (r1, "dash", RED, 1.2),
-                (pp, "dash", "#94A3B8", 1.2),
-                (s1, "dash", GREEN, 1.2),
-                (s2, "dash", RED, 1.2),
-            ]
-
-            for val, dash_type, col_hex, w in lines_to_plot:
-                fig_main.add_hline(y=val, line_dash=dash_type, line_color=col_hex, line_width=w)
-
-            # ขยายความสูงของกราฟให้เติมเต็มพื้นที่ฝั่งขวาพอดี (height=525)
-            fig_main.update_layout(
-                height=525,
-                margin=dict(l=8, r=40, t=25, b=5),
-                paper_bgcolor=BG_CARD,
-                plot_bgcolor=BG_CARD,
-                xaxis=dict(gridcolor=BORDER_SOFT, showticklabels=False, linecolor=BORDER),
-                xaxis2=dict(gridcolor=BORDER_SOFT, tickfont=dict(size=13, color=TEXT_MUTED), linecolor=BORDER),
-                yaxis=dict(gridcolor=BORDER_SOFT, side="right", tickfont=dict(size=13, color=TEXT_MUTED), linecolor=BORDER),
-                yaxis2=dict(showticklabels=False, gridcolor=BORDER_SOFT),
-                legend=dict(orientation="h", y=1.12, x=0.01, font=dict(size=13, color=TEXT_WHITE), bgcolor="rgba(255,255,255,0)"),
-                xaxis_rangeslider_visible=False,
-                hovermode="x unified",
-            )
-
-            st.plotly_chart(fig_main, use_container_width=True, config={"displayModeBar": True, "displaylogo": False})
-
-    # ==================================================================
-    # RIGHT COLUMN
-    # ==================================================================
-    with right:
-
-        _render_html(
-            f"""
-            <div style="{_card_style('margin-bottom:12px;')}">
-                <div style="border-bottom:2px solid {ACCENT};padding-bottom:5px;display:flex;justify-content:space-between;
-                            align-items:center;flex-wrap:wrap;row-gap:4px;">
-                    <span style="font-size:14px;font-weight:800;color:{TEXT_WHITE};">PRICE SETUP</span>
-                    <span style="background:rgba(56,189,248,.15);color:{ACCENT};font-size:13px;font-weight:800;
-                                 padding:2px 6px;border-radius:4px;">Current {_f(c_p)}</span>
-                </div>
-                <div style="margin-top:8px;">
-                    <div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid {BORDER_SOFT};font-size:14px;">
-                        <span style="color:{TEXT_MUTED};">Current Price</span><b style="color:{TEXT_WHITE};">{_f(c_p)} THB</b>
-                    </div>
-                    <div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid {BORDER_SOFT};font-size:14px;">
-                        <span style="color:{GREEN};">Preferred Entry</span><b style="color:{GREEN};">{_f(s1)} -- {_f(pp)}</b>
-                    </div>
-                    <div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid {BORDER_SOFT};font-size:14px;">
-                        <span style="color:{AMBER};">Watch Zone</span><b style="color:{AMBER};">{watch_zone_display}</b>
-                    </div>
-                    <div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid {BORDER_SOFT};font-size:14px;">
-                        <span style="color:{RED};">Stop Loss (30D Low)</span><b style="color:{RED};">{sl_display}</b>
-                    </div>
-                    <div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid {BORDER_SOFT};font-size:14px;">
-                        <span style="color:{TEXT_WHITE};">Target 1 (RR 1:2)</span><b style="color:{TEXT_WHITE};">{target1_display}</b>
-                    </div>
-                    <div style="display:flex;justify-content:space-between;padding:5px 0;font-size:14px;">
-                        <span style="color:{TEXT_WHITE};">Target 2 (RR 1:3)</span><b style="color:{TEXT_WHITE};">{target2_display}</b>
-                    </div>
-                </div>
-                {setup_warning_html}
-            </div>
-            """
-        )
-
-        _render_html(
-            f"""
-            <div style="{_card_style()}">
-                <div style="
-                    font-size:16px;
-                    font-weight:800;
-                    color:{TEXT_WHITE};
-                    margin-bottom:6px;
-                    border-bottom:2px solid {ACCENT};
-                    padding-bottom:4px;
-                ">
-                    ⓘ SYSTEM SCORING METHODOLOGY
-                </div>
-                <div style="font-size:14px;color:{TEXT_MUTED};line-height:1.45;">
-                    <b style="color:{TEXT_WHITE};">Trend --- {trend_weight:.0f} pts</b><br>
-                    ราคาเทียบ EMA20, EMA50 และ MA200 (หาร {trend_criteria_count} เกณฑ์คงที่)
-                    <br><br>
-                    <b style="color:{TEXT_WHITE};">Momentum --- {mom_weight:.0f} pts</b><br>
-                    MACD, ADX และ Volume Confirmation (หาร {mom_criteria_count} เกณฑ์คงที่)
-                    <br><br>
-                    <b style="color:{TEXT_WHITE};">Reward / Risk --- {rr_weight:.0f} pts</b><br>
-                    ประเมินจากผลตอบแทนเทียบกับ downside
-                    <br><br>
-                    <span style="font-size:14px;">ตัวชี้วัดที่ไม่มีข้อมูลได้ 0 คะแนน ระบบไม่ลดตัวหารให้
-                    เพื่อให้ทุกหลักทรัพย์ถูกวัดด้วยมาตรฐานเดียวกัน</span>
-                </div>
-            </div>
-            """
-        )
-
-    # ==================================================================
-    # BOTTOM SECTION
-    # ==================================================================
-    st.markdown("<div style='margin-top:12px;'></div>", unsafe_allow_html=True)
-    b_c1, b_c2 = st.columns([1.0, 1.5], gap="medium")
-
-    # ------------------------------------------------------------
-    # BOTTOM LEFT - RISK / REWARD
-    # ------------------------------------------------------------
-    with b_c1:
-
-        # ISSUE 03: NOT_COMPUTABLE ต้องไม่ถูกแสดงเป็น "0.00 : 1" ปนกับค่าที่คำนวณได้จริง
-        if not rr_computable:
-            rr_color = GRAY
-            rr_headline = "N/A"
-            rr_note = rr_status_reason
-        else:
-            rr_color = GREEN if rr_ratio >= 2.0 else (AMBER if rr_ratio >= 1.5 else RED)
-            rr_headline = f"{_f(rr_ratio)} : 1"
-            if rr_ratio >= 2.0:
-                rr_note = "อัพไซด์สูงกว่าระยะความเสี่ยงที่นิยามไว้อย่างมีนัยสำคัญ"
-            elif rr_ratio >= 1.0:
-                rr_note = "อัพไซด์สูงกว่าระยะความเสี่ยง แต่ส่วนต่างยังไม่มาก"
+try:
+    from calculate_modules.common import clean_float
+except ImportError:
+    def clean_float(value, default=0.0):
+        try:
+            f = float(value)
+            return default if (math.isnan(f) or math.isinf(f)) else f
+        except (TypeError, ValueError):
+            return default
+
+
+# =====================================================================
+# ISSUE 05: Parameterization layer
+# =====================================================================
+@dataclass(frozen=True)
+class TimingConfig:
+    trend_weight: float = 60.0
+    momentum_weight: float = 40.0
+    rr_weight: float = 0.0
+
+    trend_criteria_count: int = 3
+    momentum_criteria_count: int = 3
+
+    adx_trend_threshold: float = 25.0
+    macd_bull_threshold: float = 0.0
+    volume_ratio_threshold: float = 1.0
+
+    volume_lookback: int = 20
+    volume_exclude_current_bar: bool = True
+    use_precomputed_volume_avg: bool = False
+    volume_avg_column_candidates: Tuple[str, ...] = ("Volume_Avg20", "Volume_Avg_20")
+
+    rr_tiers: Tuple[Tuple[float, float], ...] = ((2.0, 0.0), (1.5, 0.0), (1.0, 0.0))
+    min_downside_pct: float = 1.0
+
+    # --- Trader Mode RR (v2.3): SL = 30-Day Low, Target = Risk x Multiple ---
+    stop_loss_lookback: int = 30
+    rr_target1_multiple: float = 2.0
+    rr_target2_multiple: float = 3.0
+
+    bullish_threshold: float = 70.0
+    neutral_threshold: float = 40.0
+
+    min_bars_required: int = 20
+    min_data_completeness: float = 0.50
+    enable_trend_veto: bool = True
+
+    resistance_window_short: int = 60
+    resistance_window_long: int = 120
+    ma_long_period: int = 200
+
+    close_columns: Tuple[str, ...] = ("close", "Close")
+    high_columns: Tuple[str, ...] = ("high", "High")
+    low_columns: Tuple[str, ...] = ("low", "Low")
+    volume_columns: Tuple[str, ...] = ("volume", "Volume", "vol", "Vol")
+    ema20_columns: Tuple[str, ...] = ("EMA20", "ema20", "EMA_20")
+    ema50_columns: Tuple[str, ...] = ("EMA50", "ema50", "EMA_50")
+    ma200_columns: Tuple[str, ...] = ("MA200", "ma200", "SMA200", "MA_200")
+    rsi_columns: Tuple[str, ...] = ("RSI14", "rsi14", "RSI_14", "RSI")
+    macd_columns: Tuple[str, ...] = ("MACD", "macd")
+    adx_columns: Tuple[str, ...] = ("ADX", "ADX14", "adx14", "ADX_14", "adx")
+
+    def __post_init__(self):
+        total = self.trend_weight + self.momentum_weight + self.rr_weight
+        if abs(total - 100.0) > 1e-6:
+            raise ValueError(f"น้ำหนักเสารวมต้องเท่ากับ 100 (ได้ {total})")
+        if self.trend_criteria_count < 1 or self.momentum_criteria_count < 1:
+            raise ValueError("ตัวหารของเสาต้องเป็นจำนวนเต็มบวก")
+        if self.bullish_threshold <= self.neutral_threshold:
+            raise ValueError("bullish_threshold ต้องมากกว่า neutral_threshold")
+        if self.rr_tiers:
+            ratios = [t[0] for t in self.rr_tiers]
+            if ratios != sorted(ratios, reverse=True):
+                raise ValueError("rr_tiers ต้องเรียงอัตราส่วนจากมากไปน้อย")
+            if max(t[1] for t in self.rr_tiers) > self.rr_weight + 1e-9:
+                raise ValueError("คะแนนสูงสุดใน rr_tiers เกินน้ำหนักเสา RR")
+        if self.volume_lookback < 2:
+            raise ValueError("volume_lookback ต้อง >= 2")
+        if self.stop_loss_lookback < 2:
+            raise ValueError("stop_loss_lookback ต้อง >= 2")
+        if self.rr_target1_multiple <= 0 or self.rr_target2_multiple <= 0:
+            raise ValueError("rr_target1_multiple และ rr_target2_multiple ต้องมากกว่า 0")
+        if self.rr_target2_multiple < self.rr_target1_multiple:
+            raise ValueError("rr_target2_multiple ต้องมากกว่าหรือเท่ากับ rr_target1_multiple")
+
+    @classmethod
+    def from_dict(cls, overrides: Optional[dict]) -> "TimingConfig":
+        if not overrides:
+            return cls()
+        valid = {f for f in cls.__dataclass_fields__}
+        unknown = set(overrides) - valid
+        if unknown:
+            raise KeyError(f"พารามิเตอร์ไม่รู้จัก: {sorted(unknown)}")
+        clean = {}
+        for k, v in overrides.items():
+            if k == "rr_tiers" and v is not None:
+                v = tuple((float(a), float(b)) for a, b in v)
+            elif isinstance(v, list):
+                v = tuple(v)
+            clean[k] = v
+        return cls(**clean)
+
+    @classmethod
+    def from_json(cls, path: str) -> "TimingConfig":
+        with open(path, "r", encoding="utf-8") as fh:
+            return cls.from_dict(json.load(fh))
+
+    @classmethod
+    def from_env(cls, prefix: str = "TIMING_") -> "TimingConfig":
+        overrides = {}
+        for name, f in cls.__dataclass_fields__.items():
+            env_key = prefix + name.upper()
+            if env_key not in os.environ:
+                continue
+            raw = os.environ[env_key]
+            if f.type in ("float", float):
+                overrides[name] = float(raw)
+            elif f.type in ("int", int):
+                overrides[name] = int(raw)
+            elif f.type in ("bool", bool):
+                overrides[name] = raw.strip().lower() in ("1", "true", "yes", "y")
             else:
-                rr_note = "อัพไซด์ต่ำกว่าระยะความเสี่ยง ยังไม่คุ้มค่าที่จะเข้า"
+                overrides[name] = json.loads(raw)
+        return cls.from_dict(overrides)
 
-        upside_bar = min(100, max(0, (upside_pct or 0.0) * 2))
-        downside_bar = min(100, max(0, (downside_pct or 0.0) * 5))
+    def tuned(self, **kwargs) -> "TimingConfig":
+        return replace(self, **kwargs)
 
-        _render_html(
-            f"""
-            <div style="{_card_style()}">
+    def as_dict(self) -> dict:
+        return asdict(self)
 
-                <div style="font-size:16px;font-weight:800;color:{TEXT_WHITE};margin-bottom:8px;
-                            border-bottom:2px solid {ACCENT};padding-bottom:4px;">
-                    RISK / REWARD
-                </div>
 
-                <div style="margin-bottom:6px;">
-                    <div style="display:flex;justify-content:space-between;font-size:14px;color:{TEXT_MUTED};">
-                        <span>Expected Upside</span>
-                        <b style="color:{GREEN};">{('+' + format(upside_pct, '.1f') + '%') if upside_pct is not None else 'N/A'}</b>
-                    </div>
-                    <div style="background:{BORDER_SOFT};height:5px;border-radius:2.5px;overflow:hidden;margin-top:2px;">
-                        <div style="background:{GREEN};width:{upside_bar:.0f}%;height:100%;"></div>
-                    </div>
-                </div>
+DEFAULT_CONFIG = TimingConfig()
+MIN_BARS_FOR_1Y_TREND = DEFAULT_CONFIG.ma_long_period
 
-                <div style="margin-bottom:10px;">
-                    <div style="display:flex;justify-content:space-between;font-size:14px;color:{TEXT_MUTED};">
-                        <span>Maximum Risk</span>
-                        <b style="color:{RED};">{('-' + format(downside_pct, '.1f') + '%') if downside_pct is not None else 'N/A'}</b>
-                    </div>
-                    <div style="background:{BORDER_SOFT};height:5px;border-radius:2.5px;overflow:hidden;margin-top:2px;">
-                        <div style="background:{RED};width:{downside_bar:.0f}%;height:100%;"></div>
-                    </div>
-                </div>
 
-                <div style="display:flex;justify-content:space-between;align-items:center;
-                            border-top:1px solid {BORDER_SOFT};padding-top:6px;gap:10px;">
-                    <span style="font-size:19px;font-weight:900;color:{rr_color};white-space:nowrap;">{rr_headline}</span>
-                    <span style="font-size:13px;color:{TEXT_MUTED};text-align:right;line-height:1.35;">{rr_note}</span>
-                </div>
+def _to_float(value) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(f) or math.isinf(f):
+        return None
+    return f
 
-            </div>
-            """
+
+def _resolve_column(df: pd.DataFrame, candidates: Sequence[str]) -> Optional[str]:
+    if df is None:
+        return None
+    for name in candidates:
+        if name in df.columns:
+            return name
+    return None
+
+
+def _latest_value(df: pd.DataFrame, candidates: Sequence[str]) -> Tuple[Optional[float], Optional[str]]:
+    col = _resolve_column(df, candidates)
+    if col is None:
+        return None, None
+    return _to_float(df[col].iloc[-1]), col
+
+
+def _round(value: Optional[float], digits: int = 2) -> Optional[float]:
+    return None if value is None else round(float(value), digits)
+
+
+NO_DATA_STATUS = "INSUFFICIENT_DATA"
+NO_DATA_COLOR = "#64748B"
+NO_DATA_LABEL_TH = "ข้อมูลไม่เพียงพอ"
+
+_NUMERIC_OUTPUT_KEYS = (
+    "timing_score", "rsi", "macd", "adx", "ema20", "ema50", "ma200",
+    "resistance_60d", "support_60d", "pivot_point", "resistance_2", "support_2",
+    "rr_ratio", "trend_score", "mom_score", "rr_score",
+    "upside_pct", "downside_pct", "volume_ratio", "volume_avg", "volume_last",
+)
+
+_FLAG_OUTPUT_KEYS = (
+    "k15_ok", "k16_ok", "k17_ok", "k18_ok", "k19_ok", "k20_ok", "k_rr_ok",
+    "k15_available", "k16_available", "k17_available",
+    "k18_available", "k19_available", "k20_available", "k_rr_available",
+)
+
+
+def _empty_result(reason: str = "ไม่พบข้อมูลราคาสำหรับหลักทรัพย์นี้",
+                  config: Optional[TimingConfig] = None) -> dict:
+    result = {key: None for key in _NUMERIC_OUTPUT_KEYS}
+    result.update({key: 0 for key in _FLAG_OUTPUT_KEYS})
+    result.update({
+        "data_status": NO_DATA_STATUS,
+        "data_status_th": NO_DATA_LABEL_TH,
+        "data_status_reason": reason,
+        "is_evaluated": 0,
+        "trend_signal": "N/A",
+        "overall_signal": "N/A",
+        "status_label": NO_DATA_LABEL_TH,
+        "status_color": NO_DATA_COLOR,
+        "action_th": "ยังประเมินจังหวะเข้าซื้อไม่ได้ เนื่องจากข้อมูลไม่เพียงพอ",
+        "readiness": "NO_DATA",
+        "summary_text": f"ข้อมูลไม่เพียงพอสำหรับการประเมินเชิงลึก ({reason})",
+        "rr_status": "NOT_COMPUTABLE",
+        "rr_status_th": "คำนวณไม่ได้",
+        "rr_reason": reason,
+        "rr_status_reason": reason,
+        "trend_veto_applied": 0,
+        "trend_veto_reason": "",
+        "trend_available_count": 0,
+        "mom_available_count": 0,
+        "trend_criteria_count": int((config or DEFAULT_CONFIG).trend_criteria_count),
+        "mom_criteria_count": int((config or DEFAULT_CONFIG).momentum_criteria_count),
+        "data_completeness": 0.0,
+        "missing_fields": "[]",
+        "config_snapshot": "",
+    })
+    return result
+
+
+def _check_data_gate(df_price_ticker: Optional[pd.DataFrame],
+                     config: TimingConfig) -> Optional[str]:
+    if df_price_ticker is None or not isinstance(df_price_ticker, pd.DataFrame):
+        return "ไม่ได้รับ DataFrame ราคา"
+    if df_price_ticker.empty:
+        return "DataFrame ราคาว่างเปล่า"
+    if _resolve_column(df_price_ticker, config.close_columns) is None:
+        return "ไม่พบคอลัมน์ราคาปิด (close/Close)"
+    if len(df_price_ticker) < config.min_bars_required:
+        return (f"มีข้อมูลเพียง {len(df_price_ticker)} แท่ง "
+                f"(ต้องการอย่างน้อย {config.min_bars_required} แท่ง)")
+    price = _to_float(df_price_ticker[_resolve_column(
+        df_price_ticker, config.close_columns)].iloc[-1])
+    if price is None or price <= 0:
+        return "ราคาปิดล่าสุดไม่ถูกต้อง (NaN หรือ <= 0)"
+    return None
+
+
+def classify_signal(total_score: Optional[float],
+                    config: Optional[TimingConfig] = None,
+                    trend_veto: bool = False) -> dict:
+    cfg = config or DEFAULT_CONFIG
+
+    if total_score is None:
+        return dict(
+            signal_legacy="N/A", overall_signal="N/A",
+            status_label=NO_DATA_LABEL_TH, status_color=NO_DATA_COLOR,
+            action_th="ยังประเมินจังหวะเข้าซื้อไม่ได้ เนื่องจากข้อมูลไม่เพียงพอ",
+            readiness="NO_DATA", trend_veto_applied=False,
+            summary_text="ข้อมูลไม่เพียงพอสำหรับการประเมินเชิงลึก",
         )
 
-    # ------------------------------------------------------------
-    # BOTTOM RIGHT - WHY WAIT / WHY NOW
-    # ------------------------------------------------------------
-    with b_c2:
-
-        trend_ok = k15_ok and k16_ok
-        trend_av = k15_av and k16_av
-
-        # PATCH: คำอธิบายย่อยของแต่ละหัวข้อ เขียนใหม่ให้เป็นประโยคเต็มที่บอกทั้ง
-        # "สิ่งที่ระบบเห็นจากข้อมูลจริง" และ "ทำไมถึงผ่าน/ไม่ผ่าน" ครบทั้ง 3 สถานะ
-        # (✓ ผ่าน / ✕ ไม่ผ่าน / -- ไม่มีข้อมูล) เพื่อให้คนอ่านทั่วไปเข้าใจได้ทันที
-        # โดยไม่ต้องรู้ศัพท์เทคนิคมาก่อน — ไม่กระทบ logic การตัดสิน ok/available ใดๆ
-        if trend_ok:
-            trend_desc = "ราคาปัจจุบันยืนอยู่เหนือเส้นค่าเฉลี่ยทั้งระยะสั้นและระยะกลาง (EMA20, EMA50) ซึ่งบ่งชี้ว่าแนวโน้มโดยรวมยังเป็นขาขึ้น"
-        elif trend_av:
-            trend_desc = "ราคาปัจจุบันหลุดลงต่ำกว่าเส้นค่าเฉลี่ยระยะสั้น (EMA20) แล้ว ทำให้ยังไม่สามารถยืนยันแนวโน้มขาขึ้นได้ในตอนนี้"
-        else:
-            trend_desc = "ข้อมูลราคาย้อนหลังยังไม่พอสำหรับคำนวณเส้นค่าเฉลี่ย จึงยังบอกทิศทางแนวโน้มไม่ได้"
-
-        if k18_ok:
-            momentum_desc = "เส้น MACD อยู่ในโซนบวก หมายความว่าแรงซื้อในระยะสั้นกำลังแข็งแกร่งกว่าแรงขาย"
-        elif k18_av:
-            momentum_desc = "เส้น MACD อยู่ในโซนลบ หมายความว่าแรงขายในระยะสั้นยังมีน้ำหนักมากกว่าแรงซื้อ"
-        else:
-            momentum_desc = "ข้อมูลไม่พอสำหรับคำนวณ MACD จึงยังประเมินแรงซื้อ-ขายระยะสั้นไม่ได้"
-
-        if k20_ok:
-            volume_desc = "ปริมาณการซื้อขายล่าสุดสูงกว่าค่าเฉลี่ย 20 วันที่ผ่านมา แปลว่ามีแรงซื้อ-ขายจริงเข้ามายืนยันการเคลื่อนไหวของราคา"
-        elif k20_av:
-            volume_desc = "ปริมาณการซื้อขายล่าสุดยังต่ำกว่าค่าเฉลี่ย 20 วันที่ผ่านมา แปลว่ายังไม่มีแรงซื้อ-ขายมากพอมายืนยันสัญญาณ"
-        else:
-            volume_desc = "ข้อมูลปริมาณการซื้อขายไม่พอ จึงยังใช้ยืนยันความน่าเชื่อถือของสัญญาณไม่ได้"
-
-        if not rr_computable:
-            rr_desc = "ยังคำนวณอัตราส่วนผลตอบแทนต่อความเสี่ยง (Risk/Reward) ไม่ได้ เนื่องจากข้อมูลราคาที่ใช้อ้างอิงจุดตัดขาดทุนไม่เพียงพอ"
-        elif k_rr_ok:
-            rr_desc = "ผลตอบแทนที่คาดว่าจะได้รับ (อัพไซด์) สูงกว่าความเสี่ยงที่ต้องยอมรับ (ระยะขาดทุนสูงสุด) อย่างคุ้มค่าพอที่จะเข้าซื้อ"
-        else:
-            rr_desc = "ผลตอบแทนที่คาดว่าจะได้รับยังต่ำกว่าความเสี่ยงที่ต้องยอมรับ จึงยังไม่คุ้มค่าที่จะเข้าซื้อในจุดนี้"
-
-        reasons = [
-            ("Trend", "✓" if trend_ok else "✕", GREEN if trend_ok else (RED if trend_av else GRAY), trend_desc),
-            ("Momentum", "✓" if k18_ok else "✕", GREEN if k18_ok else (RED if k18_av else GRAY), momentum_desc),
-            ("Volume", "✓" if k20_ok else "✕", GREEN if k20_ok else (RED if k20_av else GRAY), volume_desc),
-            ("Risk / Reward", "✓" if (rr_computable and k_rr_ok) else "✕",
-             GREEN if (rr_computable and k_rr_ok) else (RED if rr_computable else GRAY), rr_desc),
-        ]
-
-        reason_cards = "".join(
-            f"""
-            <div style="background:{BG_CHIP};padding:8px;border-radius:6px;">
-                <div style="font-size:14px;color:{color};font-weight:bold;">{icon} {name}</div>
-                <div style="font-size:12.5px;color:{TEXT_MUTED};margin-top:3px;line-height:1.4;">{desc}</div>
-            </div>
-            """
-            for name, icon, color, desc in reasons
+    if cfg.enable_trend_veto and trend_veto:
+        return dict(
+            signal_legacy="BEARISH", overall_signal="BEARISH (Avoid)",
+            status_label="BEARISH", status_color="#EF4444",
+            action_th="เทรนด์หลักเป็นขาลง (ราคาต่ำกว่า MA200) ห้ามรับมีด แม้เสาอื่นจะให้คะแนนดี",
+            readiness="WAIT", trend_veto_applied=True,
+            summary_text=f"ระบบยกเลิกผลรวม {total_score:.0f} คะแนนตามกฎ KO-21 (Trend Veto): "
+                         "เทรนด์หลักยืนยันเป็นขาลง จึงบังคับสถานะเป็น BEARISH (Avoid) "
+                         "เพื่อป้องกันสัญญาณ Oversold หลอกลวงจากเสาอื่น",
         )
 
-        wait_title = "WHY WAIT?" if readiness != "READY" else "WHY NOW?"
-        wait_subtitle = "เหตุผลที่ระบบยังรอการยืนยันก่อนเข้าซื้อ" if readiness != "READY" else "เหตุผลที่สัญญาณมีความพร้อมมากขึ้น"
-
-        _render_html(
-            f"""
-            <div style="{_card_style()}">
-
-                <div style="font-size:16px;font-weight:800;color:{ACCENT};margin-bottom:5px;">
-                    💡 {wait_title}
-                </div>
-
-                <div style="font-size:14px;color:{TEXT};margin-bottom:8px;">
-                    {wait_subtitle}
-                </div>
-
-                <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:6px;">
-                    {reason_cards}
-                </div>
-
-                <div style="background:rgba(56,189,248,.08);border-left:3px solid {ACCENT};padding:6px 10px;
-                            border-radius:0 6px 6px 0;font-size:14px;color:{TEXT};">
-                    <b>สรุป:</b> {summary_text}
-                </div>
-
-            </div>
-            """
+    if total_score >= cfg.bullish_threshold:
+        return dict(
+            signal_legacy="BULLISH", overall_signal="BULLISH (Strong Buy)",
+            status_label="STRONG BUY", status_color="#10B981",
+            action_th="จังหวะซื้อได้เปรียบสูง", readiness="READY",
+            summary_text="ราคายืนในโซนสะสมและโครงสร้างขาขึ้นแข็งแกร่ง พร้อมทยอยสะสม",
+        )
+    elif total_score >= cfg.neutral_threshold:
+        return dict(
+            signal_legacy="NEUTRAL", overall_signal="NEUTRAL",
+            status_label="NEUTRAL", status_color="#38BDF8",
+            action_th="แกว่งตัว รอดูสัญญาณยืนยัน", readiness="WAIT",
+            trend_veto_applied=False,
+            summary_text="แม้ราคาจะอยู่ในโซนที่น่าสนใจ แต่สัญญาณทางเทคนิคยังไม่ยืนยันการกลับตัว "
+                         "ควรรอการยืนยันจากปริมาณซื้อขายและแนวโน้มราคา",
+        )
+    else:
+        return dict(
+            signal_legacy="BEARISH", overall_signal="BEARISH (Avoid)",
+            status_label="BEARISH", status_color="#EF4444",
+            action_th="ขาลง ควรหลีกเลี่ยง", readiness="WAIT",
+            trend_veto_applied=False,
+            summary_text="แนวโน้มหลักยังเป็นขาลงและโมเมนตัมอ่อนแอ "
+                         "หลีกเลี่ยงการเข้าลงทุนจนกว่าจะเกิดสัญญาณกลับตัวชัดเจน",
         )
 
-    render_nav_footer("m3", prev_page=" Fair Value", next_page=" AI Prediction")
+
+def compute_price_levels(price: Optional[float],
+                         df_price_ticker: pd.DataFrame,
+                         high_col: Optional[str] = None,
+                         low_col: Optional[str] = None,
+                         config: Optional[TimingConfig] = None) -> dict:
+    """
+    Trader Mode (v2.3):
+    - s2  (คีย์เดิม "support_2")   -> Stop Loss = 30-Day Low
+    - r1  (คีย์เดิม "resistance_60d") -> Target 1 = ราคาปัจจุบัน + (Risk * rr_target1_multiple)  [RR 1:2]
+    - r2  (คีย์เดิม "resistance_2")   -> Target 2 = ราคาปัจจุบัน + (Risk * rr_target2_multiple)  [RR 1:3]
+    - s1  (คีย์เดิม "support_60d") และ pivot_point ยังคงคำนวณแบบเดิม (ใช้เป็น Preferred Entry / pivot)
+    หมายเหตุ: ที่นี่ยังไม่ตัดสิน "งดเข้าเทรด" (New Low Guardrails) — ปล่อยให้
+    compute_risk_reward() เป็นผู้ตัดสินสถานะ NOT_COMPUTABLE / rr_score = 0 ตามเดิม
+    เพื่อคงพฤติกรรม gate ที่มีอยู่แล้วในระบบ
+    """
+    cfg = config or DEFAULT_CONFIG
+    high_col = high_col or _resolve_column(df_price_ticker, cfg.high_columns)
+    low_col = low_col or _resolve_column(df_price_ticker, cfg.low_columns)
+
+    levels = {"r1": None, "r2": None, "s1": None, "s2": None,
+              "pivot_point": None, "levels_available": False,
+              "levels_reason": ""}
+
+    if price is None or price <= 0:
+        levels["levels_reason"] = "ไม่มีราคาอ้างอิง"
+        return levels
+    if high_col is None or low_col is None:
+        levels["levels_reason"] = "ไม่พบคอลัมน์ High/Low"
+        return levels
+
+    recent_s = df_price_ticker.tail(cfg.resistance_window_short)
+    sl_window = df_price_ticker.tail(cfg.stop_loss_lookback)
+
+    s1 = _to_float(recent_s[low_col].min())
+    sl_30d = _to_float(sl_window[low_col].min())
+
+    if s1 is None or sl_30d is None:
+        levels["levels_reason"] = "Low ในกรอบเวลาเป็น NaN ทั้งหมด"
+        return levels
+
+    s2 = sl_30d  # Stop Loss = 30-Day Low
+
+    risk = price - s2  # อาจ <= 0 หรือแคบเกินไป — compute_risk_reward() จะเป็นผู้ดักทาง
+    r1 = round(price + risk * cfg.rr_target1_multiple, 2)  # Target 1 (RR 1:2)
+    r2 = round(price + risk * cfg.rr_target2_multiple, 2)  # Target 2 (RR 1:3)
+
+    pivot = None
+    if len(df_price_ticker) >= 2:
+        prev = df_price_ticker.iloc[-2]
+        ph, pl = _to_float(prev.get(high_col)), _to_float(prev.get(low_col))
+        if ph is not None and pl is not None:
+            pivot = round((ph + pl + price) / 3.0, 2)
+
+    levels.update({
+        "r1": r1, "r2": r2,
+        "s1": round(s1, 2), "s2": round(s2, 2),
+        "pivot_point": pivot, "levels_available": True,
+    })
+    return levels
+
+
+def compute_risk_reward(price: Optional[float],
+                        r1: Optional[float],
+                        r2: Optional[float],
+                        s2: Optional[float],
+                        config: Optional[TimingConfig] = None) -> dict:
+    """
+    Trader Mode RR (v2.3):
+    - SL (risk_floor)      = s2  = 30-Day Low  (มาจาก compute_price_levels)
+    - Risk                 = price - SL
+    - Target 1 (reward_target) = r1 = price + Risk * rr_target1_multiple  (ปกติ RR 1:2)
+    - New Low Guardrails: หาก Risk <= 0 หรือ Risk < min_downside_pct% ของราคา
+      -> งดเข้าเทรดทันที (rr_status = NOT_COMPUTABLE, rr_score = 0, พร้อมข้อความเตือน)
+    คีย์ผลลัพธ์ทั้งหมดคงเดิมทุกประการ เพื่อความเข้ากันได้กับฐานข้อมูล
+    """
+    cfg = config or DEFAULT_CONFIG
+    out = {
+        "rr_ratio": None, "rr_score": 0.0, "rr_status": "NOT_COMPUTABLE",
+        "rr_status_th": "คำนวณไม่ได้", "rr_reason": "",
+        "upside_pct": None, "downside_pct": None,
+        "reward_target": None, "risk_floor": None,
+        "k_rr_ok": False, "k_rr_available": False,
+    }
+
+    if price is None or price <= 0:
+        out["rr_reason"] = "ไม่มีราคาอ้างอิง"
+        return out
+    if r1 is None or s2 is None:
+        out["rr_reason"] = "หา Stop Loss (30-Day Low) หรือ Target อ้างอิงไม่ได้"
+        return out
+
+    # Risk = ราคาปัจจุบัน - Stop Loss (30-Day Low)
+    downside_risk = price - s2
+
+    # --- New Low Guardrail #1: ราคาปัจจุบัน <= SL (Risk <= 0) -> งดเข้าเทรดทันที ---
+    if downside_risk <= 0:
+        out["risk_floor"] = round(s2, 2)
+        out["rr_reason"] = (
+            "New Low Guardrail: ราคาปัจจุบันต่ำกว่าหรือเท่ากับ Stop Loss (30-Day Low) "
+            "แล้ว (Risk <= 0) — ระบบงดเข้าเทรดทันที"
+        )
+        return out
+
+    downside_pct = (downside_risk / price) * 100.0
+
+    # --- New Low Guardrail #2: ระยะ Risk แคบเกินไป (< min_downside_pct ของราคา) ---
+    if cfg.min_downside_pct > 0 and downside_pct < cfg.min_downside_pct:
+        out["risk_floor"] = round(s2, 2)
+        out["downside_pct"] = round(downside_pct, 1)
+        out["rr_reason"] = (
+            f"New Low Guardrail: ระยะ Risk เพียง {downside_pct:.2f}% ของราคา "
+            f"(ต่ำกว่าเกณฑ์ขั้นต่ำ {cfg.min_downside_pct:.2f}%) แคบเกินกว่าจะเข้าเทรด "
+            "— ระบบงดเข้าเทรดทันที"
+        )
+        return out
+
+    # ผ่าน New Low Guardrails แล้ว: Target 1 (RR 1:2) คือ reward เป้าหมายหลักของเสานี้
+    reward_target = r1
+    upside_reward = reward_target - price
+    rr_ratio = round(max(upside_reward, 0.0) / downside_risk, 2)
+
+    rr_score = 0.0
+    for threshold, points in cfg.rr_tiers:
+        if rr_ratio >= threshold:
+            rr_score = float(points)
+            break
+
+    out.update({
+        "rr_ratio": rr_ratio,
+        "rr_score": rr_score,
+        "rr_status": "COMPUTED",
+        "rr_status_th": "คำนวณได้",
+        "upside_pct": round((upside_reward / price) * 100, 1),
+        "downside_pct": round(downside_pct, 1),
+        "reward_target": round(reward_target, 2),
+        "risk_floor": round(s2, 2),
+        "k_rr_ok": rr_score > 0,
+        "k_rr_available": True,
+    })
+    if upside_reward <= 0:
+        out["rr_reason"] = "ราคาเลยเป้าหมาย Target 1 ไปแล้ว อัพไซด์คงเหลือ = 0"
+    return out
+
+
+def compute_volume_context(df_price_ticker: pd.DataFrame,
+                           config: Optional[TimingConfig] = None) -> dict:
+    cfg = config or DEFAULT_CONFIG
+    out = {"volume_last": None, "volume_avg": None, "volume_ratio": None,
+           "volume_base_window": "",
+           "k20_available": False, "k20_ok": False, "volume_reason": ""}
+
+    vol_col = _resolve_column(df_price_ticker, cfg.volume_columns)
+    if vol_col is None:
+        out["volume_reason"] = "ไม่พบคอลัมน์ Volume"
+        return out
+
+    vol_last = _to_float(df_price_ticker[vol_col].iloc[-1])
+    if vol_last is None:
+        out["volume_reason"] = "วอลุ่มแท่งล่าสุดเป็น NaN"
+        return out
+    out["volume_last"] = vol_last
+
+    n = cfg.volume_lookback
+    vol_avg = None
+
+    if cfg.use_precomputed_volume_avg:
+        avg_col = _resolve_column(df_price_ticker, cfg.volume_avg_column_candidates)
+        if avg_col is not None and len(df_price_ticker) >= 2:
+            vol_avg = _to_float(df_price_ticker[avg_col].iloc[-2])
+            out["volume_base_window"] = f"{avg_col} @ bar -2 (shift 1)"
+
+    if vol_avg is None:
+        need = n + 1 if cfg.volume_exclude_current_bar else n
+        if len(df_price_ticker) < need:
+            out["volume_reason"] = f"ต้องการอย่างน้อย {need} แท่งเพื่อสร้างฐานค่าเฉลี่ย"
+            return out
+        if cfg.volume_exclude_current_bar:
+            base = df_price_ticker[vol_col].iloc[-(n + 1):-1]
+            out["volume_base_window"] = f"bars -{n + 1} .. -2"
+        else:
+            base = df_price_ticker[vol_col].iloc[-n:]
+            out["volume_base_window"] = f"bars -{n} .. -1"
+        vol_avg = _to_float(base.mean())
+
+    if vol_avg is None or vol_avg <= 0:
+        out["volume_reason"] = "ฐานค่าเฉลี่ยวอลุ่มเป็น NaN หรือ <= 0"
+        return out
+
+    ratio = vol_last / vol_avg
+    out.update({
+        "volume_avg": round(vol_avg, 2),
+        "volume_ratio": round(ratio, 3),
+        "k20_available": True,
+        "k20_ok": bool(ratio >= cfg.volume_ratio_threshold),
+    })
+    return out
+
+
+def _score_pillar(passes: Sequence[bool],
+                  availables: Sequence[bool],
+                  weight: float,
+                  criteria_count: int) -> float:
+    if criteria_count <= 0:
+        return 0.0
+    if len(passes) != criteria_count:
+        raise ValueError(
+            f"จำนวนเกณฑ์ ({len(passes)}) ไม่ตรงกับตัวหารที่ตั้งไว้ ({criteria_count})"
+        )
+    passed = sum(1 for p, a in zip(passes, availables) if bool(p) and bool(a))
+    return round(passed * (weight / criteria_count), 1)
+
+
+def calculate_timing_module(df_price_ticker: Optional[pd.DataFrame],
+                            config: Optional[TimingConfig] = None,
+                            **overrides) -> dict:
+    cfg = config or DEFAULT_CONFIG
+    if overrides:
+        cfg = cfg.tuned(**overrides)
+
+    gate_reason = _check_data_gate(df_price_ticker, cfg)
+    if gate_reason is not None:
+        return _empty_result(gate_reason, cfg)
+
+    close_col = _resolve_column(df_price_ticker, cfg.close_columns)
+    high_col = _resolve_column(df_price_ticker, cfg.high_columns)
+    low_col = _resolve_column(df_price_ticker, cfg.low_columns)
+    price = _to_float(df_price_ticker[close_col].iloc[-1])
+
+    ema20, _ = _latest_value(df_price_ticker, cfg.ema20_columns)
+    ema50, _ = _latest_value(df_price_ticker, cfg.ema50_columns)
+    rsi, _ = _latest_value(df_price_ticker, cfg.rsi_columns)
+    macd, _ = _latest_value(df_price_ticker, cfg.macd_columns)
+    adx, adx_col = _latest_value(df_price_ticker, cfg.adx_columns)
+
+    ma200, ma200_col = _latest_value(df_price_ticker, cfg.ma200_columns)
+    if ma200 is None and len(df_price_ticker) >= cfg.ma_long_period:
+        ma200 = _to_float(df_price_ticker[close_col].tail(cfg.ma_long_period).mean())
+
+    k15_available = ema20 is not None
+    k16_available = (ema20 is not None) and (ema50 is not None)
+    k17_available = ma200 is not None
+
+    k15_ok = bool(price > ema20) if k15_available else False
+    k16_ok = bool(ema20 > ema50) if k16_available else False
+    k17_ok = bool(price > ma200) if k17_available else False
+
+    trend_pass = [k15_ok, k16_ok, k17_ok]
+    trend_avail = [k15_available, k16_available, k17_available]
+    trend_score = _score_pillar(trend_pass, trend_avail,
+                                cfg.trend_weight, cfg.trend_criteria_count)
+
+    vol_ctx = compute_volume_context(df_price_ticker, cfg)
+
+    k18_available = macd is not None
+    k19_available = adx is not None
+    k20_available = vol_ctx["k20_available"]
+
+    k18_ok = bool(macd > cfg.macd_bull_threshold) if k18_available else False
+    k19_ok = bool(adx >= cfg.adx_trend_threshold) if k19_available else False
+    k20_ok = vol_ctx["k20_ok"]
+
+    mom_pass = [k18_ok, k19_ok, k20_ok]
+    mom_avail = [k18_available, k19_available, k20_available]
+    mom_score = _score_pillar(mom_pass, mom_avail,
+                              cfg.momentum_weight, cfg.momentum_criteria_count)
+
+    levels = compute_price_levels(price, df_price_ticker, high_col, low_col, cfg)
+    rr = compute_risk_reward(price, levels["r1"], levels["r2"], levels["s2"], cfg)
+
+    available_flags = trend_avail + mom_avail
+    total_criteria = cfg.trend_criteria_count + cfg.momentum_criteria_count
+    available_count = sum(1 for a in available_flags if a)
+    data_completeness = round(available_count / float(total_criteria), 2)
+
+    missing_fields = [
+        name for name, ok in [
+            ("EMA20", k15_available), ("EMA50", k16_available), ("MA200", k17_available),
+            ("MACD", k18_available), ("ADX", k19_available),
+            ("Volume", k20_available)
+        ] if not ok
+    ]
+    missing_fields_str = json.dumps(missing_fields, ensure_ascii=False)   # v2.3.1: JSON list ให้หน้าจอ json.loads ได้
+
+    if data_completeness < cfg.min_data_completeness:
+        result = _empty_result(
+            f"ตัวชี้วัดพร้อมใช้เพียง {available_count}/{total_criteria} "
+            f"({data_completeness:.0%}) ต่ำกว่าเกณฑ์ขั้นต่ำ {cfg.min_data_completeness:.0%}",
+            cfg,
+        )
+        result["missing_fields"] = missing_fields_str
+        result["data_completeness"] = data_completeness
+        return result
+
+    total_score = float(np.clip(trend_score + mom_score + rr["rr_score"], 0, 100))
+    total_score = round(total_score)
+
+    trend_veto = bool(cfg.enable_trend_veto and k17_available and not k17_ok)
+    sig = classify_signal(total_score, cfg, trend_veto=trend_veto)
+
+    config_snapshot_str = json.dumps({
+        "adx_trend_threshold": cfg.adx_trend_threshold,
+        "rr_tiers": cfg.rr_tiers,
+        "bullish_threshold": cfg.bullish_threshold,
+        "neutral_threshold": cfg.neutral_threshold,
+        "volume_lookback": cfg.volume_lookback,
+        "volume_exclude_current_bar": cfg.volume_exclude_current_bar,
+        "enable_trend_veto": cfg.enable_trend_veto,
+    }, ensure_ascii=False)
+
+    return {
+        "data_status": "OK",
+        "data_status_th": "ข้อมูลเพียงพอ",
+        "data_status_reason": "",
+        "is_evaluated": 1,
+        "data_completeness": float(data_completeness),
+        "missing_fields": str(missing_fields_str),
+
+        "timing_score": float(total_score),
+        "trend_score": float(trend_score),
+        "mom_score": float(mom_score),
+        "rr_score": float(rr["rr_score"]),
+
+        "rsi": _round(rsi, 1),
+        "macd": _round(macd, 3),
+        "adx": _round(adx, 1),
+        "ema20": _round(ema20),
+        "ema50": _round(ema50),
+        "ma200": _round(ma200),
+        "adx_source_column": str(adx_col or ""),
+        "ma200_source_column": str(ma200_col or ""),
+
+        "resistance_60d": _round(levels["r1"]),
+        "resistance_2": _round(levels["r2"]),
+        "support_60d": _round(levels["s1"]),
+        "support_2": _round(levels["s2"]),
+        "pivot_point": _round(levels["pivot_point"]),
+        "levels_available": 1 if levels["levels_available"] else 0,
+
+        "rr_ratio": _round(rr["rr_ratio"]),
+        "rr_status": str(rr["rr_status"]),
+        "rr_status_th": str(rr["rr_status_th"]),
+        "rr_reason": str(rr["rr_reason"] or ""),
+        "rr_status_reason": str(rr["rr_reason"] or ""),
+        "upside_pct": _round(rr["upside_pct"], 1),
+        "downside_pct": _round(rr["downside_pct"], 1),
+        "reward_target": _round(rr["reward_target"]),
+        "risk_floor": _round(rr["risk_floor"]),
+
+        "volume_last": _round(vol_ctx["volume_last"]),
+        "volume_avg": _round(vol_ctx["volume_avg"]),
+        "volume_ratio": _round(vol_ctx["volume_ratio"], 3),
+        "volume_base_window": str(vol_ctx["volume_base_window"] or ""),
+
+        "trend_signal": str(sig["signal_legacy"]),
+        "overall_signal": str(sig["overall_signal"]),
+        "status_label": str(sig["status_label"]),
+        "status_color": str(sig["status_color"]),
+        "action_th": str(sig["action_th"]),
+        "readiness": str(sig["readiness"]),
+        "summary_text": str(sig["summary_text"]),
+        "trend_veto_applied": 1 if sig.get("trend_veto_applied", False) else 0,
+        "trend_veto_reason": "ราคาต่ำกว่า MA200 (KO-15 Downtrend) — บังคับ BEARISH ตาม KO-21" if sig.get("trend_veto_applied", False) else "",
+
+        "k15_ok": 1 if k15_ok else 0,
+        "k16_ok": 1 if k16_ok else 0,
+        "k17_ok": 1 if k17_ok else 0,
+        "k18_ok": 1 if k18_ok else 0,
+        "k19_ok": 1 if k19_ok else 0,
+        "k20_ok": 1 if k20_ok else 0,
+        "k_rr_ok": 1 if rr["k_rr_ok"] else 0,
+        "k15_available": 1 if k15_available else 0,
+        "k16_available": 1 if k16_available else 0,
+        "k17_available": 1 if k17_available else 0,
+        "k18_available": 1 if k18_available else 0,
+        "k19_available": 1 if k19_available else 0,
+        "k20_available": 1 if k20_available else 0,
+        "k_rr_available": 1 if rr["k_rr_available"] else 0,
+
+        "trend_criteria_count": int(cfg.trend_criteria_count),
+        "mom_criteria_count": int(cfg.momentum_criteria_count),
+        "trend_weight": float(cfg.trend_weight),
+        "mom_weight": float(cfg.momentum_weight),
+        "rr_weight": float(cfg.rr_weight),
+        "trend_available_count": int(sum(1 for a in trend_avail if a)),
+        "mom_available_count": int(sum(1 for a in mom_avail if a)),
+
+        "config_snapshot": str(config_snapshot_str),
+    }

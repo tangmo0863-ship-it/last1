@@ -6,7 +6,7 @@ import_data.py
 
 ตาราง (tables) ที่จะถูกสร้าง:
 - stock_financials      : งบการเงินปี 2023-2025 ของ 8 หุ้นเป้าหมาย (ตัวเลขถูกแปลงเป็น float แล้ว)
-- stock_daily_prices    : ราคาหุ้นรายวัน + technical indicators ปี 2023-2025
+- stock_daily_prices    : ราคาหุ้นรายวัน + technical indicators (ช่วงตาม PRICE_START_DATE - PRICE_END_DATE)
 - stock_risk_static     : Beta / Volatility / Max Drawdown รายหุ้น จาก stock_risk_metrics.csv
 """
 
@@ -18,6 +18,11 @@ from sqlalchemy import create_engine
 DB_NAME = 'cis_database.db'
 TARGET_STOCKS = ['ADVANC', 'CCET', 'DELTA', 'HANA', 'JMART', 'KCE', 'THCOM', 'TRUE']
 TARGET_YEARS = [2023, 2024, 2025]
+
+# [FIX-D2] ช่วงวันที่ของราคาที่นำเข้า — เดิม hardcode >= 2023-01-01 ทำให้ไฟล์ราคา 10 ปี (2015-2025)
+# ถูกตัดเหลือ 3 ปีโดยไม่มีข้อความเตือน ตอนนี้รับทุกวันที่ในไฟล์ตั้งแต่ 2015 (เปลี่ยนได้ที่นี่ที่เดียว)
+PRICE_START_DATE = "2015-01-01"
+PRICE_END_DATE = "2025-12-31"
 
 SEARCH_DIRS = ['.', 'Dataset', 'Dataset/train_test', 'dataset', 'dataset/train_test']
 
@@ -265,7 +270,7 @@ def import_price_data(engine):
         )
 
     mask_stock = df['clean_ticker'].isin(TARGET_STOCKS)
-    mask_date = (df['parsed_date'] >= '2023-01-01') & (df['parsed_date'] <= '2025-12-31')
+    mask_date = (df['parsed_date'] >= PRICE_START_DATE) & (df['parsed_date'] <= PRICE_END_DATE)
 
     filtered_df = df[mask_stock & mask_date].copy()
 
